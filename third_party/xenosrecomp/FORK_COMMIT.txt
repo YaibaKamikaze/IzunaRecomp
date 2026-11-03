@@ -1,0 +1,1 @@
+fb51ac62fc640d07f5b27f154e81c7f7b785a4a2 ng2: memexport _AS_16_16_16_16 aliases (as the SDK)

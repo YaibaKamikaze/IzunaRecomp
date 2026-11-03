@@ -1,0 +1,4 @@
+name = "Input Display (script example)"
+author = "The Izuna Project"
+version = "1.0"
+description = "Shows the controller's buttons and sticks in the corner of the screen, for recordings. Hold L3 and press R3 to hide or show it. An example of a script mod: see scripts/main.lua."

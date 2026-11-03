@@ -1,0 +1,11 @@
+# A test of the mod loader that needs no files: Ryu's in-game model
+# (char\ryu_b\ryu_b.gmd) is loaded from another of the game's own costumes.
+# Copy this folder into the Mods folder on the console; Ryu wears costume C
+# from the next chapter you load.
+name = "Ryu Costume Swap (test)"
+author = "The Izuna Project"
+version = "1.0"
+description = "Ryu's in-game model loaded from his costume C model: a check that the mod loader works, with nothing of the game's in the mod."
+
+[replace]
+'char/ryu_b/ryu_b.gmd' = 'char/ryu_c/ryu_c.gmd'

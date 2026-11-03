@@ -1,0 +1,10 @@
+IzunaRecomp mods.
+
+Each mod is one folder here: copy a mod's folder in to add it, delete it to
+remove it. The hub's MODS page turns mods on and off and sets their order
+(kept in mods.toml here). Changes take effect at START GAME.
+
+A mod can replace the game's files (models, motions, effects, stages, text,
+sound), replace or hide textures, hide draws by their shader, and run Lua
+scripts with hooks on the game's functions. How to make one: docs/MODDING.md
+in the IzunaRecomp source, and the Izuna Mod Studio (tools/studio).

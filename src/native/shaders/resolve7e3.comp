@@ -1,0 +1,20 @@
+#version 450
+// [IzunaRecomp] A resolve from a 2_10_10_10_FLOAT render target, as the
+// hardware's EDRAM holds it: unsigned 7e3 colour (0 to 31.875) and a 2-bit
+// alpha. The Kasumi renderer keeps those targets as 16-bit float, where a
+// blend can go negative (NG2's blood subtracts from the floor: the post
+// passes then divided by a negative brightness - cyan dots) or past 31.875;
+// the EDRAM saturates instead. Applied to the resolved rectangle in place.
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(set = 0, binding = 0, rgba16f) uniform image2D image;
+layout(push_constant) uniform Rect { ivec2 offset; ivec2 size; } rect;
+
+void main() {
+  const ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+  if (any(greaterThanEqual(p, rect.size))) return;
+  vec4 c = imageLoad(image, rect.offset + p);
+  c = mix(c, vec4(0.0), isnan(c));  // (NaN to 0: a clamp may keep it)
+  c.rgb = clamp(c.rgb, vec3(0.0), vec3(31.875));
+  c.a = round(clamp(c.a, 0.0, 1.0) * 3.0) / 3.0;
+  imageStore(image, rect.offset + p, c);
+}

@@ -1,0 +1,8 @@
+{
+  "name": "izuna-mod-studio",
+  "productName": "Izuna Mod Studio",
+  "version": "0.1.0",
+  "description": "Mod maker for IzunaRecomp, the Ninja Gaiden II recompilation",
+  "main": "electron/main.js",
+  "license": "MIT"
+}

@@ -1,0 +1,128 @@
+# [native renderer, M3] Hooks inside Direct3D functions (src/native/native_draw.cpp).
+# Function entries are already hooked by d3d_trace.toml (the tracer forwards
+# shader creation, draws and Swap); these two sit at a specific instruction,
+# found with tools/native/insn_addr.py.
+
+# The pixel shader creator (0x8373B3C8): the shader object is complete in
+# r31 (its last field store) - links the object to the container hashed at entry.
+[[midasm_hook]]
+address = 0x8373B4CC
+name = "ng2NativeShaderCreated"
+registers = ["r31"]
+after_instruction = false
+
+# D3DDevice_Resolve (0x8373D570): just after it stores RB_COPY_CONTROL into the
+# device shadow (DEST_BASE / PITCH / INFO are stored by then). r31 device,
+# r25 flags (0x100 clear colour, 0x200 clear depth/stencil), r26 source rect,
+# r21 clear colour (4 floats), f30 clear Z.
+[[midasm_hook]]
+address = 0x8373D918
+name = "ng2NativeResolve"
+registers = ["r31", "r25", "r26", "r21", "f30"]
+after_instruction = true
+
+# The vertex shader creator (0x8373B790, same container format; its object
+# keeps the header at +872): the object is complete in r30 here (success path).
+[[midasm_hook]]
+address = 0x8373B868
+name = "ng2NativeVertexShaderCreated"
+registers = ["r30"]
+after_instruction = false
+
+# D3DDevice_BeginVertices (0x8373BD50): the vertex space it reserved in the
+# command buffer (r28; the game writes the vertices after the call returns),
+# with the primitive (r23), vertex count (r24) and size in dwords (r22).
+# Vertex fetch slot 95 points there (written to the command buffer, not the
+# device shadow).
+[[midasm_hook]]
+address = 0x8373C018
+name = "ng2NativeBeginVertices"
+registers = ["r31", "r28", "r22", "r23", "r24"]
+after_instruction = false
+
+# D3DDevice_BeginIndexedVertices (0x8373C1F0; ~2 a frame, never drawn before
+# test16): reserves vertex and index space in the command buffer and returns
+# both; the game fills them after the call. At the join of its two paths:
+# r31 device, r25 vertex space (r18 dwords), r24 index space (r17 dwords),
+# r29 the draw initiator (primitive bits 0-5, 32-bit indices 0x800, index
+# count << 16), r28 the index word (endian swap in bits 30-31), r19 the min
+# vertex index argument - written to VGT_INDX_OFFSET (0x2102) before the draw.
+[[midasm_hook]]
+address = 0x8373C6CC
+name = "ng2NativeBeginIndexedVertices"
+registers = ["r31", "r25", "r18", "r24", "r17", "r29", "r28", "r19"]
+after_instruction = false
+
+# D3DDevice_Clear (0x837390C8) clears each rect through 0x83739188, which
+# calls 0x83738A38 to write the clear into the command buffer itself - no
+# Resolve, no draw call: unseen otherwise. At that call: r3 device, r4 flags
+# (0xF targets 0-3, 0x10 depth, 0x20 stencil), r5 the rect (4 ints), r6 the
+# colour (4 floats), f1 Z, r8 stencil.
+[[midasm_hook]]
+address = 0x83739294
+name = "ng2NativeClearBegin"
+registers = ["r3", "r4", "r5", "r6", "f1", "r8"]
+after_instruction = false
+
+# ... and once it returned: the cleared targets are in the device's register
+# shadow (it set them up to write the clear), so the clear is done natively here.
+[[midasm_hook]]
+address = 0x83739298
+name = "ng2NativeClearEnd"
+registers = ["r1"]
+after_instruction = false
+
+# [IzunaRecomp] The native graphics system (src/native/izuna_gpu.cpp): the
+# Direct3D calls whose GPU side the game can see. (8373A5A8, the callback
+# handshake, and the entry of 83744D90, the flip, are public: the call
+# tracer's entry hooks pass them on.)
+
+# InsertFence (0x8373A088, internal): r3 device - the fence counter and status
+# word are read from it at entry.
+[[midasm_hook]]
+address = 0x8373A088
+name = "ng2IzunaInsertFence"
+registers = ["r3"]
+after_instruction = false
+
+# The flip (0x83744D90) just after its call of the callback handshake
+# (0x8373A5A8 with the swap callback 83744BF8): r31 device, r28 its argument
+# (0: the vsync wait follows - the flip-pending word back to 0).
+[[midasm_hook]]
+address = 0x83744EC4
+name = "ng2IzunaFlipWait"
+registers = ["r31", "r28"]
+after_instruction = false
+
+# The gamma ramp (0x8373F928): r4 the three tables (256 u16 each: red,
+# green, blue).
+[[midasm_hook]]
+address = 0x8373F928
+name = "ng2IzunaGammaRamp"
+registers = ["r4"]
+after_instruction = false
+
+# Timestamps (0x83749AE0): r3 device, r4 which of the pair.
+[[midasm_hook]]
+address = 0x83749AE0
+name = "ng2IzunaTimestamp"
+registers = ["r3", "r4"]
+after_instruction = false
+
+# [Kasumi] Direct3D's window scissor (PA_SC_WINDOW_SCISSOR), which it writes
+# straight into its command buffer (a type-0 packet from 0x2080): the
+# renderer keeps it itself (native_draw.h: OnWindowScissor).
+# SetScissorRect (0x83734530): r4-r7 left, top, right, bottom.
+[[midasm_hook]]
+address = 0x83734530
+name = "ng2KasumiScissorRect"
+registers = ["r4", "r5", "r6", "r7"]
+after_instruction = false
+
+# The clear's reset to unclipped (0x837384D0, where it writes offset 0,
+# 0,0 - 0x2000,0x2000).
+[[midasm_hook]]
+address = 0x83738608
+name = "ng2KasumiScissorReset"
+registers = ["r3"]
+after_instruction = false

@@ -1,0 +1,70 @@
+# [native renderer, M0] Ninja Gaiden II's Xbox 360 Direct3D functions (XDK 2.0.6683).
+#
+# The game has no symbols: every name here is identified from behaviour - the
+# GPU packets a function builds, the kernel exports it calls, the offsets it
+# reads through its arguments (the public XDK structures: D3DTexture's fetch
+# constant at 0x1C, a vertex buffer's fetch words at 0x18/0x1C, D3DVIEWPORT9's
+# 24 bytes), and how many places in the game call it. tools/native/d3d_map.py
+# produces the evidence (docs/native/d3d_map.txt).
+#
+# confidence: "anchor" = calls a unique kernel export; "strong" = behaviour
+# and argument layout both match; "guess" = plausible, unconfirmed. Promote to
+# "confirmed" only after a console run (call counts / arguments logged).
+#
+# All take the device in r3; the args below are r4, r5, ...
+
+[functions]
+0x837452C0 = { name = "D3DDevice_Swap", confidence = "confirmed", note = "VdSwap, VdPersistDisplay, VdGetCurrentDisplayInformation; frame counter at device+16544" }
+0x8373A918 = { name = "D3DDevice_InitializeGpu", confidence = "anchor", note = "VdInitializeRingBuffer, VdEnableRingBufferRPtrWriteBack, VdSetSystemCommandBufferGpuIdentifierAddress (part of CreateDevice)" }
+0x83741B08 = { name = "Direct3D_CreateDevice_or_Reset", confidence = "confirmed", note = "VdQueryVideoMode; r4 = present parameters, traced: 0x500 x 0x2D0 (1280x720)" }
+0x83741F00 = { name = "D3D_SetInterruptCallback_A", confidence = "anchor", note = "VdSetGraphicsInterruptCallback" }
+0x83742128 = { name = "D3D_SetInterruptCallback_B", confidence = "anchor", note = "VdSetGraphicsInterruptCallback, VdSetSystemCommandBufferGpuIdentifierAddress" }
+
+0x8373D570 = { name = "D3DDevice_Resolve", confidence = "confirmed", traced = "r6 = a type-3 texture object; 37 per frame", note = "42 call sites; r5 = 16-byte source rect, r6 = destination texture (fetch constant 0x1C-0x30); EVENT_WRITE + WAIT_REG_MEM" }
+0x837341F0 = { name = "D3DDevice_SetTexture", confidence = "strong", traced = "~1291 per frame", note = "67 call sites; r5 = texture, reads its fetch constant 0x1C-0x30; touches device dirty fields 10908/10912/13508" }
+0x83736F48 = { name = "D3DDevice_SetStreamSource", confidence = "strong", note = "8 call sites; r5 = vertex buffer, reads FetchLo/Hi at 0x18/0x1C" }
+0x837340B8 = { name = "D3DDevice_SetViewport", confidence = "strong", note = "r4 = 24-byte D3DVIEWPORT9" }
+0x83737180 = { name = "D3DDevice_SetRenderTarget", confidence = "confirmed", traced = "r4 index, r5 type-4 surface; 60 per frame", note = "29 call sites; r4 = index (value), r5 = surface (reads 0x1C)" }
+0x837374E8 = { name = "D3DDevice_SetDepthStencilSurface", confidence = "confirmed", traced = "r4 type-4 surface; 45 per frame", note = "30 call sites; r4 = surface (reads 0x1C/0x20)" }
+0x8373BD50 = { name = "D3DDevice_DrawVertices", confidence = "confirmed", note = "49 call sites; traced (prim 13 quad list, start 4, count 16); ~22 per frame" }
+0x8373CB08 = { name = "D3DDevice_DrawIndexedVertices", confidence = "confirmed", note = "THE main draw: ~580 per frame; traced (prim 6 strip, base vertex 0, start index, index count)" }
+0x8373C1F0 = { name = "D3DDevice_Draw_variant_2", confidence = "guess", note = "4 call sites; DRAW_INDX x4 (DrawIndexedVerticesUP?)" }
+0x8373C720 = { name = "D3DDevice_DrawRect_internal", confidence = "guess", note = "traced prim 8 rect list, 3 vertices (one rectangle): clear/resolve helper?" }
+0x83736568 = { name = "D3DDevice_SetShaderConstantF_A", confidence = "guess", note = "55 call sites; twin of 0x837363D8 (Vertex/PixelShaderConstantF)" }
+0x837363D8 = { name = "D3DDevice_SetShaderConstantF_B", confidence = "guess", note = "55 call sites; twin of 0x83736568" }
+0x8373B4D8 = { name = "D3DDevice_SetPixelShader", confidence = "strong", note = "34 call sites; stores the shader at device+12684 (0x318C); SVR 2011 keeps pixel then vertex adjacent (+0x3244/+0x3248) - confirm: object Common & 0xF = 7" }
+0x8373B880 = { name = "D3DDevice_SetVertexShader", confidence = "strong", note = "32 call sites; stores the shader at device+12688 (0x3190), checked by the draw to mark it dirty - confirm: Common & 0xF = 6" }
+
+# The D3DDevice keeps a copy of the GPU's registers and flushes the dirty ones
+# at each draw (D3DDevice_DrawIndexedVertices 0x8373BD50). Dirty masks: 64-bit
+# words at device+0, +8, +16, +24, +32. Flush helpers: 0x83743548 (one bit per
+# 16 registers), 0x837431A8 (one bit per register), 0x837433E8 / 0x83743268
+# (other layouts - fetch constants, to map). Register R lives at
+# device + copy + (R - base) * 4. Render states the game sets inline (most
+# SetRenderState_* / SetSamplerState_* are header inlines: no call) are read
+# from here at draw time.
+0x8373B1F8 = { name = "D3DDevice_SetVertexShaderConstantF", confidence = "strong", note = "traced (start 0x10, float data, count 25); ~668 per frame" }
+0x8373B3C8 = { name = "D3D_CreateShaderFromContainer", confidence = "strong", note = "traced: r6 = a shader container (102A1101): links runtime shader objects to containers" }
+0x837370F0 = { name = "d3d_per_draw_837370F0", confidence = "guess", note = "~581 per frame = one per indexed draw (SetIndices? r4 0, r5 0xC/4)" }
+0x837369A8 = { name = "d3d_per_texture_837369A8", confidence = "guess", note = "~1259 per frame, with SetTexture (sampler state?)" }
+0x83736EC8 = { name = "d3d_rt_setup_83736EC8", confidence = "guess", note = "~53 per frame; r4 = rect {0,0,0xFFFF,0xFFFF} + 1.0f, r5 = surface" }
+
+[device_shadow]
+0x4000 = { copy = 1920,  helper = 0x83743548, mask = "+0",  what = "vertex shader float constants 0x4000-0x43FF" }
+0x4400 = { copy = 6016,  helper = 0x83743548, mask = "+8",  what = "pixel shader float constants 0x4400-0x47FF" }
+0x2000 = { copy = 10368, helper = 0x837431A8, mask = "+16", what = "surface / window (RB_SURFACE_INFO, scissors)" }
+0x2100 = { copy = 10444, helper = 0x837431A8, mask = "+16", what = "viewport, clipping" }
+0x2180 = { copy = 10528, helper = 0x837431A8, mask = "+16", what = "shader program setup (SQ_*)" }
+0x2200 = { copy = 10548, helper = 0x837431A8, mask = "+16", what = "depth, blend, colour control, cull (RB_DEPTHCONTROL, RB_BLENDCONTROL, PA_SU_SC_MODE_CNTL)" }
+0x2280 = { copy = 10596, helper = 0x837431A8, mask = "+24", what = "raster state" }
+0x2300 = { copy = 10680, helper = 0x837431A8, mask = "+32", what = "MSAA, polygon offset" }
+0x2380 = { copy = 10832, helper = 0x837431A8, mask = "+32", what = "stencil, misc" }
+0x4900 = { copy = 10112, helper = 0x837431A8, mask = "+32", what = "boolean / loop constants" }
+
+# Device fields outside the register mirror (NG2 offsets; SVR 2011's are
+# 0xB8 higher for the shaders: its +0x3244/+0x3248).
+[device_fields]
+12684 = "current pixel shader object (SetPixelShader)"
+12688 = "current vertex shader object (SetVertexShader)"
+16544 = "Swap count (D3DDevice_Swap increments it)"
+13508 = "command buffer write pointer (13512: its end; 0x8373F180 makes room)"

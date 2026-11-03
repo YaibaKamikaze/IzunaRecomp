@@ -1,0 +1,22 @@
+# Hooks that watch the game without changing it. Bodies in src/diag_hooks.cpp.
+#
+# (The init-phase-2 crash investigation's parser hooks and the fiber context
+# switch counter were removed in the clean-up after izuna-windows-test22;
+# their call sites were taken out of generated/ the same way, so a codegen
+# regeneration gives the same code.)
+
+# Every file the game opens (sub_8380EB98's path argument): the chapter being
+# loaded (s_chap_NN.ng2) and the chapter-start auto-skip's arming.
+[[midasm_hook]]
+address = 0x8380EB98
+name = "ng2DiagFileOpen"
+registers = ["r3"]
+after_instruction = false
+
+# Once per game frame, from the main loop (sub_822F3A88): the frame-rate
+# report and the HUD's FPS readout.
+[[midasm_hook]]
+address = 0x822F3A8C
+name = "ng2DiagFrameTick"
+registers = []
+after_instruction = true

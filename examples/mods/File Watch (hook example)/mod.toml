@@ -1,0 +1,4 @@
+name = "File Watch (hook example)"
+author = "The Izuna Project"
+version = "1.0"
+description = "Shows the last file the game asked for and how many so far, top left. An example of a hook on one of the game's functions: see scripts/main.lua."

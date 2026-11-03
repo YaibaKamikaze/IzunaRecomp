@@ -1,0 +1,35 @@
+# [IzunaRecomp] Mods (src/izuna/izuna_mods.cpp; docs/MODDING.md): the game's
+# own loose-file path, for the files the enabled mods bring. Each does nothing
+# unless a mod is on. Addresses from tools/native/insn_addr.py.
+
+# The loader's request for a file (sub_823D5EE0): r3 the file id, r10 the
+# request's load-loose byte, just before it is tested (cmplwi cr6,r10,0).
+[[midasm_hook]]
+address = 0x823D5F30
+name = "izunaModFileRequest"
+registers = ["r3", "r10"]
+after_instruction = false
+
+# The loose load (sub_823D66A0) just before its CreateFile (bl 0x8380EB88):
+# r3 the path it made, D:\databin\<the file's path>.
+[[midasm_hook]]
+address = 0x823D670C
+name = "izunaModOpenPath"
+registers = ["r3"]
+after_instruction = false
+
+# A file's size (sub_823D6128), before its rounding to 2 KB (addi r11,r11,2047):
+# r11 the size, r31 the file id.
+[[midasm_hook]]
+address = 0x823D6178
+name = "izunaModFileSize"
+registers = ["r11", "r31"]
+after_instruction = false
+
+# load_img.bin loaded and its offsets made pointers (sub_83649798, just after
+# bl 0x823D67A8).
+[[midasm_hook]]
+address = 0x83649828
+name = "izunaModFileTable"
+registers = ["r1"]
+after_instruction = false

@@ -1,0 +1,58 @@
+# Game data and build inputs - never redistributable.
+/assets/
+/game/
+DLC/
+
+# Build output. generated/ is 550+ MB of codegen output, reproducible from
+# assets/default.xex via `rexglue codegen`.
+generated/
+out/
+
+__pycache__/
+*.pyc
+
+# Only the project's own code and documents go to GitHub. Everything below is
+# either game-derived, third-party binary, a local backup, or session output.
+DLC/
+dlc/
+save/
+save_backup_*/
+game_video_backup/
+bugreport/
+dll_backup_*/
+generated_snapshot_*/
+local/backups_*/
+local/diag/captures/
+tools/renderdoc/
+docs/texpack/*.png
+*.log
+*.bak
+*.bak_*
+*.good_*
+*.orig
+*.wmv
+*.cdb
+*.tex
+*.dds
+
+# third-party AI upscaler engine + models (Real-ESRGAN ncnn-vulkan; shipped in the release zip, not in git)
+tools/upscaler/
+
+# [ps5 port] The PS5 package's own folders and artwork are ours and tracked;
+# the rules above (DLC/, *.dds) are meant for game material elsewhere.
+!ps5/package/DLC/
+!ps5/package/hub/**/*.dds
+!ps5/package/sce_sys/*.dds
+# The SDK checkout made by ps5/tools/setup-linux.sh.
+third_party/rexglue-sdk/
+
+# [IzunaRecomp] The ReXGlue SDK is fetched and patched by tools/setup_sdk.sh,
+# and everything the builds and tests leave behind stays out.
+third_party/rexglue-sdk/
+scratchpad/
+logs/
+UserData/
+cache/
+*.pdb
+*.dmp
+imgui.ini
