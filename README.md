@@ -1,5 +1,8 @@
 # IzunaRecomp — The Izuna Project
 
+<img width="1280" height="720" alt="97089_dfcfff5534107b77" src="https://github.com/user-attachments/assets/aa900ec6-11f6-4c41-bf0e-e76c549b5be8" />
+
+
 A static recompilation of **Ninja Gaiden II** (Xbox 360, title `544307D5`) for
 Windows, drawn natively by the **Kasumi Renderer** (Vulkan).
 
