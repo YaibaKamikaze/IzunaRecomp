@@ -88,7 +88,7 @@ the release has the controls and the settings in detail.
 
 - Parts of some models (Sonia's back) can be missing.
 - Glass reflections and glows in places (the tower in chapter 1) look off.
-- An occasional hitch when a pre-rendered video starts.
+- There's occasional hitches and stutters, these will be improved upon.
 - Windows only for now. The tree also builds for the PS5, but that build is
   not released.
 
