@@ -125,3 +125,6 @@ with your own copy of the game.
 
 Ninja Gaiden is a trademark of Koei Tecmo. IzunaRecomp is not affiliated with
 Koei Tecmo or Microsoft.
+
+<img width="1400" height="1000" alt="HWMupABXkAAt5eC" src="https://github.com/user-attachments/assets/79e3aff2-4e30-4cb7-a698-91b840723441" />
+
