@@ -1,6 +1,6 @@
 # IzunaRecomp — The Izuna Project
 ## Skip intro patch might be causing stutters, if you get them try disabling it.
-## More updates will be coming on Saturday. This got released with the purpose of people playing around with it and seeing what can be improved, so if you have an issue with it please talk about it and send your logs, this will help the project. I am but one person using the water eating slop machine to develop this and don't have all the hardware possible to test it, I've only used a 4060 and an AMD CPU to try it so far.
+## More updates will be coming on Saturday. This got released with the purpose of people playing around with it and seeing what can be improved, so if you have an issue with it please talk about it and send your logs, this will help the project. I am but one person using the water eating slop machine to develop this and don't have all the hardware possible to test it, I've only used a 4060 and an AMD CPU to try it so far but it will be tested with an AMD GPU and on Linux soon.
 
 
 <img width="1280" height="720" alt="97089_dfcfff5534107b77" src="https://github.com/user-attachments/assets/aa900ec6-11f6-4c41-bf0e-e76c549b5be8" />
