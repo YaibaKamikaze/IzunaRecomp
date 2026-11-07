@@ -1183,8 +1183,7 @@ class Ng2App : public rex::ReXApp {
     // must not bring it back. The driver stays for NG2_PAD_SCRIPT testing.
     ng2::SetAutoSkipEnabled(false);
     input->AddDriver(ng2::MakeAutoSkipDriver());
-    ng2::SetSkipInput(input);  // [IzunaRecomp] test43: X skips cutscenes (its merged pads)
-    ng2::SetSkipCutscenesWithX(settings_.skip_cutscenes_x);
+    ng2::SetSkipAnyCutscene(settings_.skip_cutscenes_x);  // [IzunaRecomp] test44
     REXLOG_INFO("Input: every controller drives guest user 0");
   }
 

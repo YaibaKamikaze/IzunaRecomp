@@ -5,8 +5,9 @@
 **New**
 - **Linux:** an AppImage (x86-64, glibc 2.38+). On the Steam Deck it runs
   natively, without Proton — the Windows build cannot draw under Proton.
-- **Skip any cutscene with X** (Square), also the ones the game will not let
-  you skip. On by default (Settings › Game).
+- **Skip cutscenes with Cross / A** (or Start / Options) the first time you
+  see them too — the game normally lets you skip only cutscenes you have
+  already watched. On by default (Settings › Game).
 - **Present mode:** FIFO (V-Sync), FIFO relaxed, Mailbox or Immediate
   (Settings › Display). None of them changes the game's speed.
 - **Fullscreen refresh:** a fixed 144-170 Hz screen (no G-Sync / FreeSync) is

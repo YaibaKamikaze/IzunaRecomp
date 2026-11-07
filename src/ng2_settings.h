@@ -206,7 +206,8 @@ struct Ng2Settings {
   // [IzunaRecomp] test42: fullscreen on a fixed 144-170 Hz screen - switch it
   // to a refresh 60 divides (izuna_fullscreen_refresh_switch, pc_display_clock.cpp).
   bool pc_refresh_switch = true;
-  // [IzunaRecomp] test43: skip any cutscene by pressing X (ng2_autoskip.h).
+  // [IzunaRecomp] test44: every cutscene skippable with Cross / A (ng2_autoskip.h);
+  // the key keeps its test43 name so saved settings carry over.
   bool skip_cutscenes_x = true;
   // [IzunaRecomp] test43: the swapchain's present mode on a PC - auto, fifo,
   // fifo_relaxed, mailbox, immediate (present_mode, vulkan_presenter.cpp).

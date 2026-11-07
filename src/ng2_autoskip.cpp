@@ -56,10 +56,7 @@ constexpr double kPressHold = 0.08;
 
 constexpr uint16_t kButtonA = 0x1000;
 constexpr uint16_t kButtonStart = 0x0010;
-constexpr uint16_t kButtonX = 0x4000;
-std::atomic<bool> g_skip_with_x{true};
-std::atomic<rex::input::InputSystem*> g_skip_input{nullptr};
-std::atomic<double> g_skip_press_until{-1.0};
+std::atomic<bool> g_skip_any_cutscene{true};
 
 std::atomic<bool> g_enabled{false};
 std::atomic<double> g_armed_until{-1.0};
@@ -472,7 +469,6 @@ class AutoSkipDriver final : public rex::input::InputDriver {
       const double phase = std::fmod(Now(), kPressPeriod);
       if (phase < kPressHold) buttons |= kButtonA | kButtonStart;
     }
-    if (Now() < g_skip_press_until.load(std::memory_order_acquire)) buttons |= kButtonStart;  // (X: PollCutsceneSkip)
     float lx = 0, ly = 0, rx = 0, ry = 0, lt = 0, rt = 0;
     if (!real)
       PadFileState(buttons, lx, ly, rx, ry, lt, rt);
@@ -527,34 +523,55 @@ class AutoSkipDriver final : public rex::input::InputDriver {
 
 }  // namespace
 
-void SetSkipCutscenesWithX(bool enabled) { g_skip_with_x.store(enabled, std::memory_order_release); }
-void SetSkipInput(rex::input::InputSystem* input) { g_skip_input.store(input, std::memory_order_release); }
+void SetSkipAnyCutscene(bool enabled) { g_skip_any_cutscene.store(enabled, std::memory_order_release); }
 
+// The game's own rule (Ghidra, sub_836331B0 / sub_83633E88 / sub_836366F8):
+//  - a cutscene is a script on the game's cutscene thread; [0x84A536EC] is
+//    its state (0 none, 1 a step running, 2 waiting - most of the time);
+//  - the script opens and closes a "skip allowed" window ([0x84A53702]: its
+//    opcode 0 sets 1, opcodes 1 and 3 set 0);
+//  - inside the window, a new press of A or START (Cross or Options; the
+//    game's own pad bits 0x110) skips it - but only if the cutscene's byte in
+//    the "watched" table ([0x84C3B9E4] + 0x68 + its number [0x84C250C4],
+//    numbers below 0x180) is set. The script's end (opcode 6) sets that byte,
+//    when [0x84C23C00] is 0.
+// So "skippable once watched" becomes "skippable always" by setting the byte
+// when the cutscene starts, under the same condition the game sets it at its
+// end - the press, the window and the skip itself stay the game's. Called
+// once per main-loop iteration (diag_hooks.cpp).
 void PollCutsceneSkip() {
-  static bool x_was_down = false;
-  auto* input = g_skip_input.load(std::memory_order_acquire);
-  if (!input || !g_skip_with_x.load(std::memory_order_acquire)) {
-    x_was_down = false;
+  static uint32_t s_last_id = 0xFFFFFFFFu;
+  static bool s_window_seen = false;
+  if (!g_skip_any_cutscene.load(std::memory_order_acquire)) {
+    s_last_id = 0xFFFFFFFFu;
     return;
   }
   auto* memory = REX_KERNEL_MEMORY();
   if (!memory) return;
-  // (the game's cutscene script: running while this is 1 - sub_836331B0)
-  const int16_t script = rex::memory::load_and_swap<int16_t>(memory->TranslateVirtual<const uint8_t*>(0x84A536ECu));
-  X_INPUT_STATE st = {};
-  const bool x_down = input->GetState(0, &st) == X_ERROR_SUCCESS && (st.gamepad.buttons & kButtonX);
-  const bool pressed = x_down && !x_was_down;
-  x_was_down = x_down;
-  if (!pressed || script != 1) return;
-  // Its byte in the game's skippable table (table + 0x68 + the cutscene's
-  // number, numbers up to 0x17F): 1, so the game lets START skip it.
-  const uint32_t id = rex::memory::load_and_swap<uint32_t>(memory->TranslateVirtual<const uint8_t*>(0x84C250C4u));
-  const uint32_t table = rex::memory::load_and_swap<uint32_t>(memory->TranslateVirtual<const uint8_t*>(0x84C3B9E4u));
-  if (id <= 0x17F && table >= 0x10000u) {
-    if (auto* flag = memory->TranslateVirtual<uint8_t*>(table + id + 0x68)) *flag = 1;
+  auto u16 = [&](uint32_t a) { return rex::memory::load_and_swap<uint16_t>(memory->TranslateVirtual<const uint8_t*>(a)); };
+  auto u32 = [&](uint32_t a) { return rex::memory::load_and_swap<uint32_t>(memory->TranslateVirtual<const uint8_t*>(a)); };
+  if (u16(0x84A536ECu) == 0) {  // no cutscene script running
+    if (s_last_id != 0xFFFFFFFFu && !s_window_seen)
+      REXLOG_INFO("Cutscene {}: ended; the game never offered a skip in it", s_last_id);
+    s_last_id = 0xFFFFFFFFu;
+    return;
   }
-  g_skip_press_until.store(Now() + 0.2, std::memory_order_release);
-  REXLOG_INFO("Cutscene {}: skipped with X", id);
+  const uint32_t id = u16(0x84C250C4u);
+  const bool window = u16(0x84A53702u) != 0;
+  if (id != s_last_id) {
+    s_last_id = id;
+    s_window_seen = false;
+  }
+  if (window && !s_window_seen) {
+    s_window_seen = true;
+    REXLOG_INFO("Cutscene {}: skip allowed (Cross / A or Start)", id);
+  }
+  const uint32_t table = u32(0x84C3B9E4u);
+  if (id >= 0x180 || table < 0x10000u || u32(0x84C23C00u) != 0) return;
+  if (auto* watched = memory->TranslateVirtual<uint8_t*>(table + id + 0x68); watched && *watched == 0) {
+    *watched = 1;
+    REXLOG_INFO("Cutscene {}: marked as watched, so it can be skipped", id);
+  }
 }
 
 void SetAutoSkipEnabled(bool enabled) {

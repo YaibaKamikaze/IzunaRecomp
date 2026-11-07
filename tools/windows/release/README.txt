@@ -71,9 +71,11 @@ Display > Fullscreen refresh
                          On a 144-170 Hz screen without G-Sync / FreeSync, fullscreen
                          switches it to 120, 180 or 240 Hz so every frame shows
                          equally long; your desktop's rate comes back on exit.
-Game > Skip cutscenes with X
-                         X (Square) skips any cutscene, also the ones the game
-                         does not let you skip. On by default.
+Game > Skip cutscenes with Cross / A
+                         Cross (A on Xbox, or Start / Options) skips a cutscene
+                         also the first time you see it - the game normally
+                         lets you skip only the ones already watched. On by
+                         default.
 Sound > Audio delay (A/V sync)
                          Holds the sound back to meet the picture (40 ms default).
 Sound > Volume / Stereo level / Bass on stereo

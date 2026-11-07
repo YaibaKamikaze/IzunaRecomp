@@ -158,7 +158,7 @@ void ApplyLiveSettings(const Ng2Settings& s, rex::ui::Window* window) {
   // FXAA is the native present's post-process (read at every present), so it
   // changes with the next frame: the antialiasing row is not restart-bound.
   SetCvar("native_antialias", s.antialias);
-  ng2::SetSkipCutscenesWithX(s.skip_cutscenes_x);  // [IzunaRecomp] test43
+  ng2::SetSkipAnyCutscene(s.skip_cutscenes_x);  // [IzunaRecomp] test44
   // [IzunaRecomp] test43: the A/V sync delay, live (the audio driver reads it every callback)
   SetCvar("audio_resync_target_frames", std::to_string(6 + (std::clamp(s.audio_delay_ms, 0, 120) * 3 + 8) / 16));
 #if !defined(__PROSPERO__)

@@ -40,14 +40,11 @@ void NoteRealInput();
 void SetAutoSkipEnabled(bool enabled);
 bool AutoSkipActive();
 
-// [IzunaRecomp] test43: skip any cutscene with X (Settings > Game). Once per
-// main-loop iteration (diag_hooks.cpp): in a cutscene (the game's script
-// state 0x84A536EC == 1), a new press of X - any controller, or the
-// keyboard's X key - marks the cutscene skippable (its byte in the game's
-// table, 0 for the ones it will not let you skip) and presses START on the
-// synthetic pad for 0.2 s, the game's own skip.
-void SetSkipCutscenesWithX(bool enabled);
-void SetSkipInput(rex::input::InputSystem* input);
+// [IzunaRecomp] test44: every cutscene skippable with Cross / A (or Start),
+// the game's own skip, also before it has been watched (Settings > Game): the
+// game's "watched" mark is set when a cutscene starts instead of when it ends.
+// Once per main-loop iteration (diag_hooks.cpp). See ng2_autoskip.cpp.
+void SetSkipAnyCutscene(bool enabled);
 void PollCutsceneSkip();
 
 // The synthetic pad. Owned by the input system once added.

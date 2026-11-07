@@ -317,10 +317,10 @@ std::vector<Setting> Build() {
                      "screen equally long. Your desktop's rate comes back when the game closes.",
                      &Ng2Settings::pc_refresh_switch, true, false, true, "Monitor's own", "A multiple of 60"));
 #endif
-  // [IzunaRecomp] test43: any cutscene, skippable or not.
-  t.push_back(Toggle(Tab::kGame, "Skip cutscenes with X",
-                     "Press X (Square on a PlayStation controller) during any cutscene to skip it - also the ones the "
-                     "game does not normally let you skip.",
+  // [IzunaRecomp] test44: every cutscene skippable, watched or not.
+  t.push_back(Toggle(Tab::kGame, "Skip cutscenes with Cross / A",
+                     "Press Cross (A on an Xbox controller, or Start / Options) to skip a cutscene, also the first time "
+                     "you see it - the game normally lets you skip only the ones you have already watched.",
                      &Ng2Settings::skip_cutscenes_x, true, false, true));
   // --- Developer ---
   t.push_back(Toggle(Tab::kDeveloper, "Logging",

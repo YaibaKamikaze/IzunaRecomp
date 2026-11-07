@@ -82,8 +82,9 @@ the release has the controls and the settings in detail.
 - **No stutter from new pipelines at the start** — the game waits, behind a
   progress bar, for the pipelines it is about to use (a list of 480+ shipped
   with it, plus every one your own sessions met).
-- **Skip any cutscene with X**, also the ones the game won't let you skip
-  (on by default, Settings › Game).
+- **Skip cutscenes with Cross / A** (or Start), also the first time you see
+  them — normally the game only lets you skip ones you've watched (on by
+  default, Settings › Game).
 - **A/V sync** — the sound held back to meet the picture (Settings › Sound).
 - **A full app around the game** — a hub with settings, an in-game menu
   (Esc / F10, or hold View / Share), performance readouts, saves import, DLC.
