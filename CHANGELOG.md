@@ -1,8 +1,11 @@
 # Changelog
 
-## v0.2.1 — Linux, smoother starts, accuracy fixes
+## v0.2.1 — Linux, PS5, smoother starts, accuracy fixes
 
 **New**
+- **PS5:** the app folder `PPSA94203` for consoles that run homebrew apps,
+  with the game's shaders built in (no first-start wait). It can use the game
+  files of an installed Ninja's Dawn for PS5 (`PPSA94202`).
 - **Linux:** an AppImage (x86-64, glibc 2.38+). On the Steam Deck it runs
   natively, without Proton — the Windows build cannot draw under Proton.
 - **Skip cutscenes with Cross / A** (or Start / Options) the first time you

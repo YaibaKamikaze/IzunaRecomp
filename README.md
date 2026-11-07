@@ -1,5 +1,5 @@
 # IzunaRecomp — The Izuna Project
-## v0.2.1 adds a Linux AppImage (Steam Deck included), smoother starts and accuracy fixes.
+## v0.2.1 adds a Linux AppImage (Steam Deck included), a PS5 build, smoother starts and accuracy fixes.
 ## This got released with the purpose of people playing around with it and seeing what can be improved, so if you have an issue with it please talk about it and send your logs, this will help the project. I am but one person using the water eating slop machine to develop this and don't have all the hardware possible to test it, I've only used a 4060 and an AMD CPU to try it so far, so reports from AMD and Intel Arc GPUs are especially welcome.
 
 
@@ -7,7 +7,7 @@
 
 
 A static recompilation of **Ninja Gaiden II** (Xbox 360, title `544307D5`) for
-Windows and Linux, drawn natively by the **Kasumi Renderer** (Vulkan).
+Windows, Linux and the PS5, drawn natively by the **Kasumi Renderer** (Vulkan).
 
 The game's PowerPC code is translated ahead of time into native x86-64, and
 its Direct3D calls are answered by the Kasumi Renderer, which draws every frame
@@ -38,8 +38,8 @@ own copy.
 | | What | |
 |---|---|---|
 | **1** | **Your own copy of Ninja Gaiden II for Xbox 360**, extracted to a folder containing `default.xex` | Nothing works without it. |
-| **2** | **Windows 10 or 11, 64-bit**, or **Linux** with glibc 2.38+ (SteamOS, Ubuntu 24.04+, Fedora 40+, Arch…) | |
-| **3** | **A GPU with Vulkan** — NVIDIA GTX 900 / AMD RX 400 / Intel Arc or newer, with an up-to-date driver | |
+| **2** | **Windows 10 or 11, 64-bit**, or **Linux** with glibc 2.38+ (SteamOS, Ubuntu 24.04+, Fedora 40+, Arch…), or **a PS5 that runs homebrew apps** (a jailbroken console with a homebrew launcher) | |
+| **3** | On a PC, **a GPU with Vulkan** — NVIDIA GTX 900 / AMD RX 400 / Intel Arc or newer, with an up-to-date driver | |
 
 Nothing else needs installing (no Visual C++ Redistributable).
 
@@ -49,6 +49,22 @@ Nothing else needs installing (no Visual C++ Redistributable).
 it executable (`chmod +x`) and run it — on a Steam Deck, add it to Steam as a
 non-Steam game and run it as it is, without Proton. Settings, logs and mods
 live in `~/.local/share/IzunaRecomp`. The rest of this section is the same.
+
+**PS5:** download `IzunaRecomp-<version>-ps5.zip` and unzip it: you get a
+folder named **`PPSA94203`**.
+
+1. Copy your extracted game (`default.xex`, every `.ng2` archive, the videos
+   and the rest of the disc's files) straight into **`PPSA94203/Game Data/`**,
+   so that `default.xex` sits directly in it. If Ninja's Dawn for PS5
+   (`PPSA94202`) is already installed with the game, you can skip this: the
+   app uses that copy.
+2. Copy the whole `PPSA94203` folder to **`/data/homebrew/`** on the console
+   (FTP is the usual way).
+3. Start it from your homebrew launcher; the hub opens, then **START GAME**.
+
+Optional: DLC packages into `PPSA94203/DLC/`, Xbox 360 saves into
+`PPSA94203/Saves Import/`. Logs are in `/data/homebrew/PPSA94203/logs/`. The
+game's shaders are built into the PS5 app, so there is no first-start wait.
 
 **Windows:**
 
@@ -109,7 +125,8 @@ the release has the controls and the settings in detail.
 - There's occasional hitches and stutters, these will be improved upon.
 - The Windows build cannot draw under Proton / Wine (its renderer cannot use
   the game's memory there): on Linux and the Steam Deck use the AppImage.
-- The tree also builds for the PS5, but that build is not released.
+- The PS5 build is newer than the PC ones and less tested: report anything
+  odd with the newest log from `/data/homebrew/PPSA94203/logs/`.
 
 Report anything else through issues, with the `logs` folder from beside
 `ng2.exe` (the newest `ng2_*.log`, and a `crash-*.dmp` if there is one).
@@ -119,8 +136,9 @@ Report anything else through issues, with the `logs` folder from beside
 See [docs/BUILDING.md](docs/BUILDING.md). In short: the ReXGlue SDK is fetched
 and patched by `tools/setup_sdk.sh`, the game's code is recompiled from **your
 own** `default.xex` (never committed — `generated/` is reproducible from it),
-and the Windows build is cross-compiled from Linux with Clang against the
-headers and libraries of your own Build Tools for Visual Studio.
+the Windows build is cross-compiled from Linux with Clang against the
+headers and libraries of your own Build Tools for Visual Studio, and the PS5
+build uses the ps5-plume-triangle toolchain.
 
 ## Credits
 
@@ -129,6 +147,13 @@ headers and libraries of your own Build Tools for Visual Studio.
   runtime, as carried by the svr2011-ps5 project's `rexglue-ps5` branch.
 - **XenosRecomp** (hedge-dev), through goliathret's reeot-XenosRecomp fork —
   the shader recompiler behind the Kasumi Renderer's shader translation.
+- **The PS5 build** stands on [ps5-plume-triangle](https://github.com/Nazky/ps5-plume-triangle)
+  by Nazky (the toolchain, the app startup and `libc.prx` of BlackBearReloaded's
+  ps5-native-app-boilerplate), the PS5 payload SDK (John Törnblom; mihawk-99's fork) and mihawk-99's
+  [PS5_Mesa](https://github.com/mihawk-99/PS5_Mesa) (the RADV Vulkan driver),
+  and elripalda's PS5 runtime; and on
+  [Ninja's Dawn PS5](https://github.com/YaibaKamikaze/ninjas-dawn-ps5), the
+  port it grew from.
 - **[ng2recomp](https://github.com/gamboozino/ng2recomp)** by gamboozino —
   another Ninja Gaiden II recompilation, whose published research into the
   game's rendering (the Xenos multiply rule, predicate and control-flow
@@ -142,13 +167,19 @@ headers and libraries of your own Build Tools for Visual Studio.
 
 IzunaRecomp's own source is under the MIT licence ([LICENSE](LICENSE)), as is
 Ninja's Dawn, which it forks. Third-party components keep their own licences
-([THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)). No game material is covered
-by any of these licences or included in this repository; the executable in
-each release contains the game's code in translated form and is useful only
-with your own copy of the game.
+([THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)). The PS5 **release binary**
+also contains GPL-3.0-or-later components (the app startup and `libc.prx` from
+ps5-native-app-boilerplate, via ps5-plume-triangle), so the PS5 release is
+distributed under the terms of the **GNU GPL v3**; this repository, plus the
+pinned upstream versions listed in THIRD_PARTY_NOTICES.md, is its source (the
+PS5 zip's `licenses` folder has the details). No game material is covered by
+any of these licences or included in this repository; the executable in each
+release contains the game's code (on the PS5 also its shaders) in translated
+form and is useful only with your own copy of the game.
 
 Ninja Gaiden is a trademark of Koei Tecmo. IzunaRecomp is not affiliated with
-Koei Tecmo or Microsoft.
+Koei Tecmo, Microsoft or Sony. PlayStation and PS5 are trademarks of Sony
+Interactive Entertainment.
 
 <img width="1400" height="1000" alt="HWMupABXkAAt5eC" src="https://github.com/user-attachments/assets/79e3aff2-4e30-4cb7-a698-91b840723441" />
 

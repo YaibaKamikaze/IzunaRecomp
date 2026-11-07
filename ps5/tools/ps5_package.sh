@@ -16,7 +16,7 @@ set -euo pipefail
 
 build=$(realpath "${1:?cmake build dir}")
 tri=$(realpath "${2:?ps5-plume-triangle checkout}")
-title_id=${3:-PPSA94202}
+title_id=${3:-PPSA94203}
 ps5dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 version=$(head -n1 "$ps5dir/VERSION.txt")
 
@@ -92,6 +92,45 @@ if len(prefix) >= 4:
 PY
 "$tool" self --sign --in "$stage/build/eboot.elf" --out "$app/eboot.bin" --magic 0x1D3D154F
 cp "$tri/runtime/libc.prx" "$app/sce_module/libc.prx"
+
+# [IzunaRecomp] The licences of what the app carries (as the Windows release's
+# licenses folder, for what the PS5 build links), and the GPL notice for
+# libc.prx and the startup code linked into eboot.bin.
+root=$(dirname "$ps5dir")
+sdk=$root/third_party/rexglue-sdk
+lic=$app/licenses
+mkdir -p "$lic"
+copy_license() {  # name source
+    [[ -f $2 ]] || { echo "error: licence file missing: $2" >&2; exit 1; }
+    cp "$2" "$lic/$1"
+}
+cp "$root/LICENSE" "$app/LICENSE.txt"
+copy_license GPL-3.0.txt "$ps5dir/package/licenses-extra/GPL-3.0.txt"
+copy_license ps5-runtime-GPL-NOTICE.txt "$ps5dir/package/licenses-extra/ps5-runtime-GPL-NOTICE.txt"
+copy_license Mesa-license.rst "$tri/.deps/src/PS5_Mesa/docs/license.rst"
+copy_license Mesa-MIT.txt "$tri/.deps/src/PS5_Mesa/licenses/MIT"
+copy_license rexglue-sdk.txt "$sdk/LICENSE"
+copy_license lua.txt "$root/third_party/lua/LICENSE"
+copy_license zstd.txt "$root/third_party/zstd/LICENSE"
+copy_license smol-v.txt "$root/third_party/smol-v/LICENSE.txt"
+copy_license XenosRecomp.md "$root/third_party/xenosrecomp/LICENSE.md"
+copy_license SDL3.txt "$sdk/thirdparty/sdl3/LICENSE.txt"
+copy_license imgui.txt "$sdk/thirdparty/imgui/LICENSE.txt"
+copy_license fmt.txt "$sdk/thirdparty/fmt/LICENSE"
+copy_license spdlog.txt "$sdk/thirdparty/spdlog/LICENSE"
+copy_license xxHash.txt "$sdk/thirdparty/xxHash/LICENSE"
+copy_license tomlplusplus.txt "$sdk/thirdparty/tomlplusplus/LICENSE"
+copy_license utfcpp.txt "$sdk/thirdparty/utfcpp/LICENSE"
+copy_license cli11.txt "$sdk/thirdparty/cli11/LICENSE"
+copy_license o1heap.txt "$sdk/thirdparty/o1heap/LICENSE"
+copy_license glslang.txt "$sdk/thirdparty/glslang/LICENSE.txt"
+copy_license spirv-tools.txt "$sdk/thirdparty/spirv-tools/LICENSE"
+copy_license vulkan-memory-allocator.txt "$sdk/thirdparty/vulkan-memory-allocator/LICENSE.txt"
+copy_license FFmpeg.md "$sdk/thirdparty/FFmpeg/LICENSE.md"
+copy_license FFmpeg-LGPLv2.1.txt "$sdk/thirdparty/FFmpeg/COPYING.LGPLv2.1"
+copy_license libmspack-LGPLv2.1.txt "$sdk/thirdparty/libmspack/libmspack/COPYING.LIB"
+copy_license font-Cinzel-OFL.txt "$root/ps5/assets/fonts/OFL-Cinzel.txt"
+copy_license font-Inter-OFL.txt "$root/ps5/assets/fonts/OFL-Inter.txt"
 
 content_version=$(printf '%02d.%03d.%03d' "$(cut -d. -f1 <<<"$version")" "$(cut -d. -f2 <<<"$version")" \
     "$(cut -d. -f3 <<<"$version.0")")

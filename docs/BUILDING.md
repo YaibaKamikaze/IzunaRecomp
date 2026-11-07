@@ -73,3 +73,24 @@ binary needs glibc 2.38 or newer where it runs; libstdc++ is linked in.
 The game's shaders are not built here: `ng2.exe` recompiles them from the
 player's copy at the first start (`src/izuna/izuna_shaders.cpp`, with the
 XenosRecomp fork in `third_party/xenosrecomp`).
+
+## 5. The PS5 build
+
+Set up the toolchain as in [ps5/BUILD.md](../ps5/BUILD.md), section 1
+(`ps5/tools/setup-linux.sh` builds Nazky's ps5-plume-triangle in
+`~/ng2-ps5-deps`: the PS5 payload SDK, RADV from mihawk-99's PS5_Mesa, the app
+startup, `libc.prx` and the signer). Then:
+
+```
+tools/native/build_shaders.sh              # the game's shaders, from your default.xex
+export PS5_PAYLOAD_SDK=~/ng2-ps5-deps/ps5-plume-triangle/.deps/native/ps5-payload-sdk
+tools/native/ps5_build.sh                  # out/ps5/ng2
+TITLE_NAME="Ninja Gaiden II - IzunaRecomp" \
+  ps5/tools/ps5_package.sh out/ps5 ~/ng2-ps5-deps/ps5-plume-triangle PPSA94203
+```
+
+The app folder is `out/ps5/ps5-app/PPSA94203`, with the licences of what it
+carries in `licenses/`. Unlike the PC builds, the PS5 app has the game's
+shaders built in (translated by `build_shaders.sh` from your copy, like the
+code): build output only, never committed. The packager refuses a package
+that contains any game file.

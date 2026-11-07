@@ -7,9 +7,9 @@ with the PS5 port on top. The recompiled code is generated from **your own**
 Everything here runs on **Linux** (Ubuntu 24.04, or WSL2 Ubuntu 24.04 on
 Windows). The PS5 toolchain does not run on Windows.
 
-> Status: milestone M1 (see `../CLAUDE.md` section 9): every step below runs
-> end to end on Ubuntu 24.04 (a VirtualBox VM is the reference build machine)
-> and produces a signed app folder. Not yet run on a console.
+> For IzunaRecomp's PS5 build, section 1 sets up the toolchain and
+> [docs/BUILDING.md](../docs/BUILDING.md), section 5, has the build and package
+> commands; sections 4-6 below describe the older Ninja's Dawn PS5 flow.
 
 ## 0. Windows only: WSL2
 
@@ -126,18 +126,18 @@ a codegen recompile only the shards that changed.
 ps5/tools/ps5_package.sh out/ps5 ~/ng2-ps5-deps/ps5-plume-triangle
 ```
 
-The app folder is `out/ps5/ps5-app/PPSA94202`. The script ends by checking that
+The app folder is `out/ps5/ps5-app/PPSA94203`. The script ends by checking that
 no game file is inside it and refuses the package if one is.
 
 ## 6. Install on the PS5
 
-1. Copy `PPSA94202` to `/data/homebrew/` over FTP.
-2. Copy your extracted disc into `/data/homebrew/PPSA94202/Game Data/`
+1. Copy `PPSA94203` to `/data/homebrew/` over FTP.
+2. Copy your extracted disc into `/data/homebrew/PPSA94203/Game Data/`
    (`default.xex` directly inside it).
 3. Optional: DLC packages into `DLC/`, Xbox 360 saves into `Saves Import/`.
 4. Start it from your homebrew launcher. The hub opens; press START GAME.
 
-Logs are in `/data/homebrew/PPSA94202/logs/`. Send the newest one with any
+Logs are in `/data/homebrew/PPSA94203/logs/`. Send the newest one with any
 report.
 
 ## Where things are

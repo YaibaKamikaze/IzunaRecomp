@@ -9,6 +9,15 @@
   folder (`tools/windows/make_release.sh` copies them). `dxcompiler.dll` (the
   DirectX Shader Compiler, used at the first start to compile the game's
   shaders for your GPU) ships beside the executables under its own licence.
+- **The PS5 release** (the `PPSA94203` app folder) links in the same
+  libraries (not DXC or the Vulkan loader), plus Mesa's RADV driver for the
+  PS5 (MIT and Mesa's other licences). Its app startup (`app_crt.cpp`,
+  `app_cpp_runtime.cpp`, linked into `eboot.bin`) and `sce_module/libc.prx`
+  are BlackBearReloaded's ps5-native-app-boilerplate, as carried by Nazky's
+  ps5-plume-triangle, under **GPL-3.0-or-later**: the PS5 release is therefore
+  distributed under the terms of the GNU GPL v3, with this repository plus the
+  pinned revisions below as its source. The licence texts and a notice are in
+  the app's `licenses/` folder (`ps5/tools/ps5_package.sh` copies them).
 - **FFmpeg** is under the LGPL v2.1 (no GPL parts are enabled). Its
   corresponding source is the FFmpeg submodule of the ReXGlue SDK at the
   commit below plus [patches/ffmpeg-izuna.patch](patches/ffmpeg-izuna.patch);
@@ -51,6 +60,14 @@
 | stb_image | [src/third_party](src/third_party) | MIT / public domain |
 | RenderDoc in-application API header | [src/third_party/renderdoc_app.h](src/third_party/renderdoc_app.h) | MIT |
 | Inter, Cinzel typefaces | [ps5/assets/fonts](ps5/assets/fonts) | SIL Open Font Licence 1.1 |
+
+### PS5 toolchain and runtime (v0.2.1)
+
+| Component | Source | Revision |
+|---|---|---|
+| ps5-plume-triangle (Nazky): toolchain, app startup and `libc.prx` (GPL-3.0-or-later, BlackBearReloaded's ps5-native-app-boilerplate) | https://github.com/Nazky/ps5-plume-triangle | `d54d9adb084b` |
+| PS5 payload SDK (John Törnblom; mihawk-99's fork, GPL-3.0; import stubs only are linked) | https://github.com/mihawk-99/PS5_PayloadSDK | `95c08f27386f` |
+| Mesa RADV for the PS5 (mihawk-99; MIT and Mesa's licences) | https://github.com/mihawk-99/PS5_Mesa | `0b2d6d1a61d9` |
 
 ## Release-only files
 

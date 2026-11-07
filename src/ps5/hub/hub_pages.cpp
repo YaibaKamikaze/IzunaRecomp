@@ -20,8 +20,8 @@ const char* const kQuitAsk = "Back to the PS5 home screen?";
 const char* const kQuitWhat = "Back to the PS5 home screen.";
 const char* const kRemoveFrom = "from the console";
 const char* const kModsWhere = "copy it into the Mods folder in the app's folder (beside Game Data) over FTP";
-const char* const kDlcWhere = "into /data/homebrew/PPSA94202/DLC/";
-const char* const kSavesWhere = "/data/homebrew/PPSA94202/Saves Import/.";
+const char* const kDlcWhere = "into /data/homebrew/PPSA94203/DLC/";
+const char* const kSavesWhere = "/data/homebrew/PPSA94203/Saves Import/.";
 const char* const kResetTo = "Put every setting back to the PS5 defaults?";
 const char* const kPlatformName = "Ninja Gaiden II for PS5";
 #else
@@ -236,7 +236,7 @@ void Hub::Home(const PadState& pad) {
       }
     } else if (!ready) {
       PlaySound(Sound::kError);
-      Confirm("GAME DATA", ctx_.game.message + "\n\nThe folder is /data/homebrew/PPSA94202/Game Data.", nullptr);
+      Confirm("GAME DATA", ctx_.game.message + "\n\nThe folder is /data/homebrew/PPSA94203/Game Data (or Ninja's Dawn PS5's, PPSA94202, if it is installed).", nullptr);
     } else {
       PlaySound(Sound::kStart);
       leaving_ = true;
