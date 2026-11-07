@@ -59,6 +59,17 @@ tools/windows/make_release.sh out/windows/ng2.exe <destination> out/windows-comp
 `dxcompiler.dll` (DXC 1.8, x64: `DXC_DLL=` its path), the README, the folders the hub reads
 and the libraries' licences. It refuses to package any game file.
 
+## 4. The Linux build (the AppImage)
+
+```
+tools/linux/build.sh                       # out/linux-desktop/ng2
+tools/linux/make_appimage.sh               # out/linux-release/IzunaRecomp-<version>-x86_64.AppImage
+```
+
+It needs DXC 1.8's Linux libraries (`libdxcompiler.so`, `libdxil.so`;
+`DXC_LINUX_DIR=` their folder) and downloads appimagetool 1.9.0 once. The
+binary needs glibc 2.38 or newer where it runs; libstdc++ is linked in.
+
 The game's shaders are not built here: `ng2.exe` recompiles them from the
 player's copy at the first start (`src/izuna/izuna_shaders.cpp`, with the
 XenosRecomp fork in `third_party/xenosrecomp`).

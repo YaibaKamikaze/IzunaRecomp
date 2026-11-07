@@ -54,5 +54,12 @@
 
 ## Release-only files
 
-- `dxcompiler.dll` — DirectX Shader Compiler (Microsoft), under its licence
+- `dxcompiler.dll` (Windows), `libdxcompiler.so` and `libdxil.so` (the Linux
+  AppImage) — DirectX Shader Compiler (Microsoft), under its licence
   (`licenses/dxcompiler.txt` in the release).
+
+## Reference, not code
+
+- [ng2recomp](https://github.com/gamboozino/ng2recomp) by gamboozino (GPL-3.0):
+  its published notes on Ninja Gaiden II's rendering were a reference for
+  IzunaRecomp's own fixes. None of its code is in IzunaRecomp.

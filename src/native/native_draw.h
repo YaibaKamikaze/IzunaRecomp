@@ -103,6 +103,9 @@ void QueueSwap(uint32_t device, uint32_t front_texture);
 // The record sequence of the last kickoff or swap queued: GPU sync waits until
 // the native work of every record up to it has finished on the GPU.
 uint64_t LastKickoffRecord();
+// [IzunaRecomp] test36: what the worker is doing now, and where its time went
+// in the frame it is on (for the late side effect's log line).
+std::string WorkerActivity();
 // The sequence the next record will have (the game thread's view): a side
 // effect of a Direct3D call is due once a kickoff or swap record from it on
 // has finished on the GPU.

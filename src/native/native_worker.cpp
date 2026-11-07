@@ -68,6 +68,10 @@ struct Threading {
   std::atomic<uint64_t> busy_seq{0};
   std::atomic<uint32_t> busy_type{0};
   std::atomic<int64_t> busy_since_ns{0};
+  // [IzunaRecomp] test36: the records' phase times (native_phase.h) summed for
+  // WorkerActivity, and how many records ran
+  std::atomic<int64_t> phase_total_ns[kPhaseCount] = {};
+  std::atomic<uint64_t> records_run{0};
   std::atomic<uint64_t> exceptions{0};
   std::vector<uint8_t> scratch;  // (producer) the record being built
   uint8_t producer_mirror[kWinEnd] = {};
@@ -372,6 +376,17 @@ void WorkerMain() {
                     double(rex::external_frame::PresentOverlapNs(record_t0, now)) / 1e6);
       }
     }
+    if (g_timed) {  // (the frame's so far: a swap starts the next frame's)
+      if (Rec(h.type) == Rec::Swap) {
+        for (auto& v : q.phase_total_ns) v.store(0, std::memory_order_relaxed);
+        q.records_run.store(0, std::memory_order_relaxed);
+      } else {
+        for (int k = 0; k < kPhaseCount; ++k) {
+          if (t_phase_ns[k]) q.phase_total_ns[k].fetch_add(t_phase_ns[k], std::memory_order_relaxed);
+        }
+        q.records_run.fetch_add(1, std::memory_order_relaxed);
+      }
+    }
     q.busy_seq.store(0, std::memory_order_release);
     {
       std::lock_guard<std::mutex> lock(q.mutex);
@@ -443,6 +458,23 @@ void QueueWindowScissor(uint32_t tl, uint32_t br) {
 bool DrawThreaded() { return Threaded(); }
 
 uint64_t LastKickoffRecord() { return q.last_kickoff.load(std::memory_order_acquire); }
+
+std::string WorkerActivity() {
+  static const char* const kNames[] = {"draw", "draw (user vertices)", "resolve", "clear", "kickoff", "swap", "scissor",
+                                       "wrap"};
+  double ms[kPhaseCount];
+  for (int k = 0; k < kPhaseCount; ++k) ms[k] = double(q.phase_total_ns[k].load()) / 1e6;
+  const uint64_t records = q.records_run.load();
+  const uint64_t seq = q.busy_seq.load(std::memory_order_acquire);
+  const uint32_t type = q.busy_type.load();
+  std::string now = seq ? fmt::format("on record {} ({}) for {:.1f} ms", seq, type < 8 ? kNames[type] : "?",
+                                      double(SteadyNs() - q.busy_since_ns.load()) / 1e6)
+                        : std::string("waiting for records");
+  return fmt::format("the worker is {}; this frame so far, {} records: submits {:.1f} ms, fence waits {:.1f} ms, "
+                     "textures {:.1f} ms, pipelines {:.1f} ms, image creation {:.1f} ms",
+                     now, records, ms[kPhaseSubmit], ms[kPhaseFence], ms[kPhaseTexture], ms[kPhasePipeline],
+                     ms[kPhaseImage]);
+}
 
 uint64_t NextRecordSeq() { return q.enqueued + 1; }
 

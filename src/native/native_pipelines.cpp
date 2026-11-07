@@ -3,6 +3,7 @@
 // the precompile of the pipelines earlier runs used.
 
 #include "native/native_draw_internal.h"
+#include "izuna/izuna_progress.h"
 
 namespace ng2native::draw {
 
@@ -430,7 +431,12 @@ void PipelineWorker() {
       from.pop_front();
     }
     if (job.kind == 1 || job.kind == 2) {  // a shader part
-      if (job.lib->claimed.exchange(true, std::memory_order_acq_rel)) continue;
+      if (job.lib->claimed.exchange(true, std::memory_order_acq_rel)) {
+        // (built through its other queue entry - an urgent one from a draw:
+        // still one fewer for WaitForPrecompile to wait for)
+        if (job.precompile) g.precompile_left.fetch_sub(1, std::memory_order_relaxed);
+        continue;
+      }
       const VkPipeline p = BuildShaderPart(job.kind == 1, job.vs, job.key);
       job.lib->pipeline.store(p, std::memory_order_release);
       job.lib->state.store(p ? 1 : 2, std::memory_order_release);
@@ -450,7 +456,10 @@ void PipelineWorker() {
       }
       continue;
     }
-    if (job.slot->claimed.exchange(true, std::memory_order_acq_rel)) continue;  // (its other queue entry)
+    if (job.slot->claimed.exchange(true, std::memory_order_acq_rel)) {  // (its other queue entry)
+      if (job.precompile) g.precompile_left.fetch_sub(1, std::memory_order_relaxed);
+      continue;
+    }
     const auto t0 = std::chrono::steady_clock::now();
     const VkPipeline p = BuildPipeline(job.key, job.vs, job.ps, job.vs_size, job.ps_size);
     job.slot->pipeline.store(p, std::memory_order_release);
@@ -728,6 +737,42 @@ void QueuePrecompile() {
   REXLOG_INFO("[native] pipeline precompile: {} queued ({} shipped, {} from this player's runs; {} keys read) in {} ms",
               queued, shipped, own, total,
               std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count());
+}
+
+// [IzunaRecomp] test42: hold the game (DrawInit, on its thread) until the
+// pipelines QueuePrecompile queued are built - at most 2 minutes - the
+// progress panel showing them. Before, the game started while they were
+// still building: with the intro videos playing that went unseen, but with
+// them skipped (or on a first run) the opening scenes met half-built
+// pipelines and stuttered (issue: "skip intro videos makes it stutter more").
+// A later start finds them in the driver's pipeline cache: seconds at most.
+void WaitForPrecompile() {
+  const int total = int(g.precompile_left.load(std::memory_order_relaxed));
+  auto& stage = izuna::progress::g_pipelines;
+  if (total <= 0) {
+    stage.finished.store(true, std::memory_order_release);
+    return;
+  }
+  const auto t0 = std::chrono::steady_clock::now();
+  stage.total.store(total, std::memory_order_relaxed);
+  stage.done.store(0, std::memory_order_relaxed);
+  stage.active.store(true, std::memory_order_release);
+  bool timed_out = false;
+  for (;;) {
+    const int left = int(g.precompile_left.load(std::memory_order_relaxed));
+    stage.done.store(std::clamp(total - left, 0, total), std::memory_order_relaxed);
+    if (left <= 0) break;
+    if (std::chrono::steady_clock::now() - t0 > std::chrono::minutes(2)) {
+      timed_out = true;
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  stage.active.store(false, std::memory_order_release);
+  stage.finished.store(true, std::memory_order_release);
+  REXLOG_INFO("[native] pipeline precompile: the game waited {} ms for {} {}{}",
+              std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count(),
+              total, g.gpl ? "shader parts" : "pipelines", timed_out ? " (gave up after 2 minutes: the rest build in play)" : "");
 }
 
 // Save the pipeline cache when pipelines were added since the last save.

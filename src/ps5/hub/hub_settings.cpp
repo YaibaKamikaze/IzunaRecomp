@@ -283,6 +283,12 @@ std::vector<Setting> Build() {
                      "moment it falls behind is caught up instead of leaving voices late for the rest of the "
                      "cutscene, and sound pauses when the picture does. Turn off for the original behaviour.",
                      &Ng2Settings::ps5_audio_resync, true, false, true));
+  t.push_back(Ints(Tab::kSound, "Audio delay (A/V sync)",
+                   "Holds the game's sound back so it meets the picture, which reaches your screen a frame or two "
+                   "after the game makes the sound. Raise it if sounds come early (a hit heard before it lands); "
+                   "lower it on a fast monitor. Needs the Cutscene audio fix on.",
+                   &Ng2Settings::audio_delay_ms, {0, 20, 40, 60, 80}, {"Off", "20 ms", "40 ms", "60 ms", "80 ms"}, 2,
+                   false, true));
   t.push_back(Toggle(Tab::kSound, "Hub music", "Plays the theme (hub/music/*.wav) behind this menu.",
                      &Ng2Settings::ps5_menu_music, true, false, false));
 
@@ -295,6 +301,27 @@ std::vector<Setting> Build() {
   t.push_back(Toggle(Tab::kPerformance, "Readout: bars", "A small bar under each number.", &Ng2Settings::hud_bars,
                      true, false, true));
 
+#if !defined(__PROSPERO__)
+  // [IzunaRecomp] test42: a fixed 144-170 Hz screen shows 60 fps unevenly.
+  // [IzunaRecomp] test43: the present mode (the game keeps its own pace in all).
+  t.push_back(Strings(Tab::kDisplay, "Present mode",
+                      "How finished frames reach the screen; none changes the game's speed. FIFO: each waits for "
+                      "the screen's refresh (no tearing). FIFO relaxed: a late frame may tear instead of waiting. "
+                      "Mailbox: the newest frame at each refresh, lower latency, no tearing. Immediate: at once, "
+                      "lowest latency, tears. Auto is FIFO. From the next start.",
+                      &Ng2Settings::pc_present_mode, {"auto", "fifo", "fifo_relaxed", "mailbox", "immediate"},
+                      {"Auto", "FIFO (V-Sync)", "FIFO relaxed", "Mailbox", "Immediate (tearing)"}, 0, true, false));
+  t.push_back(Toggle(Tab::kDisplay, "Fullscreen refresh",
+                     "In fullscreen on a screen whose refresh rate 60 does not divide (144, 165, 170 Hz) and without "
+                     "G-Sync / FreeSync, a multiple of 60 switches it to 120, 180 or 240 Hz, so every frame stays on "
+                     "screen equally long. Your desktop's rate comes back when the game closes.",
+                     &Ng2Settings::pc_refresh_switch, true, false, true, "Monitor's own", "A multiple of 60"));
+#endif
+  // [IzunaRecomp] test43: any cutscene, skippable or not.
+  t.push_back(Toggle(Tab::kGame, "Skip cutscenes with X",
+                     "Press X (Square on a PlayStation controller) during any cutscene to skip it - also the ones the "
+                     "game does not normally let you skip.",
+                     &Ng2Settings::skip_cutscenes_x, true, false, true));
   // --- Developer ---
   t.push_back(Toggle(Tab::kDeveloper, "Logging",
                      "Writes what happens in each session to the logs folder, for reporting a problem. Off "

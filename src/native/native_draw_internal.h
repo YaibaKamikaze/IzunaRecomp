@@ -781,6 +781,7 @@ VkPipeline Pipeline(const PipelineKey& key, const ShaderInfo* vs, const ShaderIn
 void PipelineWorker();
 void CreatePipelineCache();
 void QueuePrecompile();
+void WaitForPrecompile();  // [IzunaRecomp] test42 (native_pipelines.cpp)
 void SavePipelineCache();
 
 // native_textures.cpp

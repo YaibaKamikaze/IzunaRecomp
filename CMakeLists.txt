@@ -15,6 +15,16 @@ endif()
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# [IzunaRecomp] test43: the Linux desktop build (the AppImage, tools/linux):
+# a PC like Windows - the hub, SDL input and sound, the shaders built from the
+# player's copy at start - on Linux. Not the PS5 build, nor the PS5 host test.
+if(UNIX AND NOT APPLE AND NOT PS5 AND NOT NG2_PS5_HOST_TEST)
+    set(IZUNA_LINUX ON)
+endif()
+if(WIN32 OR IZUNA_LINUX)
+    set(IZUNA_PC ON)
+endif()
+
 # [IzunaRecomp] No GPU emulation: the native graphics system and the Kasumi
 # renderer (src/native) are the only graphics path, so the SDK leaves its Xenos
 # GPU plugin (rexgpu-xenos) out entirely.
@@ -22,7 +32,7 @@ set(REXGLUE_GPU_EMULATION OFF CACHE BOOL "Build the Xenos GPU emulation plugin (
 # [IzunaRecomp] Windows too draws with Vulkan (the Kasumi renderer): the SDK's
 # Vulkan side on, its Direct3D 12 side (the emulated GPU's presenter) off, as
 # on the PS5 and Linux (tools/windows/README.md).
-if(WIN32)
+if(IZUNA_PC)
     set(REXGLUE_USE_VULKAN ON CACHE BOOL "Enable Vulkan graphics backend" FORCE)
     set(REXGLUE_USE_D3D12 OFF CACHE BOOL "Enable D3D12 graphics backend" FORCE)
     # One .exe, the runtime linked in (as on the PS5): no GPU plugin to share it with.
@@ -133,7 +143,7 @@ endif()
 # [IzunaRecomp] Windows: the PS5's hub as the front screen (src/ps5/hub), with
 # the PC's input, sound and folders in the same files (ps5_pad.cpp,
 # ps5_sound.cpp, ps5_paths.cpp: SDL and the .exe's folder off the PS5).
-if(WIN32)
+if(IZUNA_PC)
     file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/IZUNA_VERSION" IZUNA_VERSION LIMIT_COUNT 1)
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/IZUNA_VERSION")
     list(APPEND NG2_SOURCES
@@ -149,7 +159,7 @@ if(WIN32)
         src/ps5/overlay/ps5_overlay.cpp
         src/ps5/ps5_button_prompts.cpp
         src/ps5/ps5_textures.cpp)
-    message(STATUS "IzunaRecomp ${IZUNA_VERSION} for Windows")
+    message(STATUS "IzunaRecomp ${IZUNA_VERSION} for ${CMAKE_SYSTEM_NAME}")
 endif()
 
 # The icon. Explorer, the desktop shortcut and the taskbar all read it from
@@ -207,7 +217,7 @@ rexglue_setup_target(ng2)
 # host test (no DXC) have them built in: tools/native/build_shaders.sh writes
 # out/native-shaders/shader_cache.cpp - made from the game: build output,
 # never committed.
-if(WIN32)
+if(IZUNA_PC)
     target_compile_definitions(ng2 PRIVATE IZUNA_SHADERS_FROM_GAME=1)
 else()
     set(NG2_SHADER_CACHE "${CMAKE_CURRENT_SOURCE_DIR}/out/native-shaders/shader_cache.cpp")
@@ -315,9 +325,10 @@ elseif(NG2_PS5_HOST_TEST)
         $<TARGET_PROPERTY:imgui,INTERFACE_INCLUDE_DIRECTORIES>
         ${REXSDK_DIR}/thirdparty/stb
         ${REXSDK_DIR}/thirdparty/xxHash)
-elseif(WIN32)
-    # [IzunaRecomp] The Windows build from the SDK's source tree (not its
-    # installed package): ImGui and stb from there, as the PS5 build takes them.
+elseif(IZUNA_PC)
+    # [IzunaRecomp] The Windows (and Linux desktop) build from the SDK's source
+    # tree (not its installed package): ImGui and stb from there, as the PS5
+    # build takes them.
     target_compile_definitions(ng2 PRIVATE
         IZUNA_VERSION="${IZUNA_VERSION}"
         NG2_PS5_FONTS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/ps5/assets/fonts")
@@ -334,6 +345,8 @@ if(WIN32)
     # [IzunaRecomp] Minidumps (dbghelp), 1 ms timers (winmm); a PDB beside the
     # .exe to read the minidumps with (kept with the build, not shipped).
     target_link_libraries(ng2 PRIVATE dbghelp winmm)
+endif()
+if(IZUNA_PC)
     # [IzunaRecomp] The game's shaders built from the player's own copy at
     # startup (src/izuna/izuna_shaders.cpp): our XenosRecomp fork's translator
     # (third_party/xenosrecomp, MIT) and DXC loaded from dxcompiler.dll beside
@@ -356,6 +369,17 @@ if(WIN32)
         COMPILE_DEFINITIONS "REEOT_RECOMP;NG2_RECOMP;_CRT_SECURE_NO_WARNINGS"
         COMPILE_OPTIONS "-Wno-switch;-Wno-unused-variable;-Wno-null-arithmetic;-fms-extensions;-w"
         INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/third_party/xenosrecomp;${CMAKE_CURRENT_SOURCE_DIR}/third_party/xenosrecomp/inc;${CMAKE_CURRENT_SOURCE_DIR}/third_party/smol-v;${CMAKE_CURRENT_SOURCE_DIR}/third_party/zstd")
+endif()
+if(IZUNA_LINUX)
+    # [IzunaRecomp] One binary for any current distribution (the AppImage):
+    # the C++ runtime linked in; libdxcompiler.so and Vulkan from beside it /
+    # the system, loaded at run time (dl). Not -static-libgcc: a guest thread
+    # ending (pthread_exit) unwinds through the system's libgcc_s, and a
+    # second, static unwinder in the binary aborted it (the first Linux run).
+    target_link_options(ng2 PRIVATE -static-libstdc++)
+    target_link_libraries(ng2 PRIVATE ${CMAKE_DL_LIBS})
+endif()
+if(WIN32)
     # [IzunaRecomp] The CPU level (tools/windows/toolchain.cmake): ng2.exe for
     # x86-64-v3 with the redirect for older CPUs, ng2-compat.exe for x86-64-v2.
     if(IZUNA_MARCH STREQUAL "x86-64-v3")
@@ -368,6 +392,6 @@ if(WIN32)
     # (/DEBUG alone turns the linker's dead-code removal and folding off: back on)
     target_link_options(ng2 PRIVATE "-Wl,/DEBUG" "-Wl,/OPT:REF" "-Wl,/OPT:ICF")
 endif()
-if(NOT WIN32)
+if(NOT IZUNA_PC)
     target_sources(ng2 PRIVATE src/izuna/izuna_shaders_none.cpp)  # [IzunaRecomp] (no startup build: the built-in table)
 endif()

@@ -39,7 +39,7 @@ namespace {
 
 // Bump when the translation changes in a way shader_common.h does not show
 // (shader_recompiler.cpp): every saved table is then built again.
-constexpr const char* kBuilderVersion = "izuna-shaders 4 (reeot-XenosRecomp ng2 + scene fit, coverage, per-slot scale, exact interpolant components where compared)";
+constexpr const char* kBuilderVersion = "izuna-shaders 5 (reeot-XenosRecomp ng2 + scene fit, coverage, per-slot scale, exact interpolant components where compared, draw-time vfetch swizzle, D3D9 0 x anything = 0)";
 constexpr uint32_t kMagic = 0x48535A49;  // 'IZSH'
 constexpr uint32_t kFormat = 1;
 

@@ -203,6 +203,18 @@ struct Ng2Settings {
   // all - no file, no log threads - and the renderer skips the timing it
   // measures only for the log (ng2_app.h's OnConfigurePaths: log_level off).
   bool logging = true;
+  // [IzunaRecomp] test42: fullscreen on a fixed 144-170 Hz screen - switch it
+  // to a refresh 60 divides (izuna_fullscreen_refresh_switch, pc_display_clock.cpp).
+  bool pc_refresh_switch = true;
+  // [IzunaRecomp] test43: skip any cutscene by pressing X (ng2_autoskip.h).
+  bool skip_cutscenes_x = true;
+  // [IzunaRecomp] test43: the swapchain's present mode on a PC - auto, fifo,
+  // fifo_relaxed, mailbox, immediate (present_mode, vulkan_presenter.cpp).
+  std::string pc_present_mode = "auto";
+  // [IzunaRecomp] test43: the game's sound held back this long (ms) to meet
+  // the picture, which reaches the screen a couple of frames after the game
+  // makes the sound (issue #5: a window's crash heard before Ryu reaches it).
+  int audio_delay_ms = 40;
   // [IzunaRecomp] Resolution on a PC: the picture's height - 720, 768, 900,
   // 1080, 1440, 1800 or 2160 (the 16:9 sizes 1280x720 ... 3840x2160), each a
   // true resolution (the game drawn at it, shown 1:1) - or 0 Auto: the exact
@@ -400,6 +412,10 @@ struct Ng2Settings {
         << "pc_prompts=" << pc_prompts << "\n"
         << "pc_low_latency=" << (pc_low_latency ? 1 : 0) << "\n"
         << "logging=" << (logging ? 1 : 0) << "\n"
+        << "pc_refresh_switch=" << (pc_refresh_switch ? 1 : 0) << "\n"
+        << "skip_cutscenes_x=" << (skip_cutscenes_x ? 1 : 0) << "\n"
+        << "pc_present_mode=" << pc_present_mode << "\n"
+        << "audio_delay_ms=" << audio_delay_ms << "\n"
         << "pc_defaults_version=" << pc_defaults_version << "\n"
         << "pc_resolution=" << pc_resolution << "\n"
         << "audio_volume=" << audio_volume << "\n"
@@ -508,6 +524,12 @@ struct Ng2Settings {
     else if (k == "pc_prompts") pc_prompts = std::clamp(std::atoi(v.c_str()), 0, 2);
     else if (k == "pc_low_latency") pc_low_latency = Truthy(v);
     else if (k == "logging") logging = Truthy(v);
+    else if (k == "pc_refresh_switch") pc_refresh_switch = Truthy(v);
+    else if (k == "skip_cutscenes_x") skip_cutscenes_x = Truthy(v);
+    else if (k == "audio_delay_ms") audio_delay_ms = std::clamp(std::atoi(v.c_str()), 0, 120);
+    else if (k == "pc_present_mode") {
+      if (v == "auto" || v == "fifo" || v == "fifo_relaxed" || v == "mailbox" || v == "immediate") pc_present_mode = v;
+    }
     else if (k == "pc_defaults_version") pc_defaults_version = std::atoi(v.c_str());
     else if (k == "pc_render_scale") {  // (test11-13's: a multiple, in tenths in test12-13)
       int v10 = std::atoi(v.c_str());

@@ -1,0 +1,12 @@
+#!/bin/sh
+# [IzunaRecomp] The AppImage's launcher. The AppImage itself is read-only, so
+# the app's folder - settings, logs, caches, mods, DLC, saves to import - is
+# ~/.local/share/IzunaRecomp (REX_APP_FOLDER, read by the runtime). Its
+# READMEs, licences and the hub's files are copied there, never over a file
+# that is already there.
+HERE="$(dirname "$(readlink -f "$0")")"
+DATA="${XDG_DATA_HOME:-$HOME/.local/share}/IzunaRecomp"
+mkdir -p "$DATA" || exit 1
+cp -rn "$HERE/usr/share/izunarecomp/." "$DATA/" 2>/dev/null
+export REX_APP_FOLDER="$DATA"
+exec "$HERE/usr/bin/ng2" "$@"

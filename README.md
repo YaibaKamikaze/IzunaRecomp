@@ -7,7 +7,7 @@
 
 
 A static recompilation of **Ninja Gaiden II** (Xbox 360, title `544307D5`) for
-Windows, drawn natively by the **Kasumi Renderer** (Vulkan).
+Windows and Linux, drawn natively by the **Kasumi Renderer** (Vulkan).
 
 The game's PowerPC code is translated ahead of time into native x86-64, and
 its Direct3D calls are answered by the Kasumi Renderer, which draws every frame
@@ -38,12 +38,19 @@ own copy.
 | | What | |
 |---|---|---|
 | **1** | **Your own copy of Ninja Gaiden II for Xbox 360**, extracted to a folder containing `default.xex` | Nothing works without it. |
-| **2** | **Windows 10 or 11, 64-bit** | |
+| **2** | **Windows 10 or 11, 64-bit**, or **Linux** with glibc 2.38+ (SteamOS, Ubuntu 24.04+, Fedora 40+, Arch…) | |
 | **3** | **A GPU with Vulkan** — NVIDIA GTX 900 / AMD RX 400 / Intel Arc or newer, with an up-to-date driver | |
 
 Nothing else needs installing (no Visual C++ Redistributable).
 
 ## Getting started
+
+**Linux / Steam Deck:** download `IzunaRecomp-<version>-x86_64.AppImage`, make
+it executable (`chmod +x`) and run it — on a Steam Deck, add it to Steam as a
+non-Steam game and run it as it is, without Proton. Settings, logs and mods
+live in `~/.local/share/IzunaRecomp`. The rest of this section is the same.
+
+**Windows:**
 
 1. Download `IzunaRecomp-<version>-windows.zip` from [Releases](../../releases)
    and unzip it anywhere.
@@ -69,7 +76,15 @@ the release has the controls and the settings in detail.
   anti-aliasing, anisotropic filtering, output filters.
 - **Frame pacing** — V-Sync Auto follows your monitor (60, 120, 144 Hz…,
   G-Sync / FreeSync), or locks the game's clock to 60 / 59.94 Hz; a Low input
-  latency mode.
+  latency mode; the present mode of your choice (FIFO, FIFO relaxed, Mailbox,
+  Immediate); in fullscreen, a 144-170 Hz screen switched to a refresh that
+  60 fps divides, so frames show evenly.
+- **No stutter from new pipelines at the start** — the game waits, behind a
+  progress bar, for the pipelines it is about to use (a list of 480+ shipped
+  with it, plus every one your own sessions met).
+- **Skip any cutscene with X**, also the ones the game won't let you skip
+  (on by default, Settings › Game).
+- **A/V sync** — the sound held back to meet the picture (Settings › Sound).
 - **A full app around the game** — a hub with settings, an in-game menu
   (Esc / F10, or hold View / Share), performance readouts, saves import, DLC.
 - **Keyboard and controller** — play with either or both; every key can be
@@ -89,11 +104,11 @@ the release has the controls and the settings in detail.
 
 ## Known issues
 
-- Parts of some models (Sonia's back) can be missing.
 - Glass reflections and glows in places (the tower in chapter 1) look off.
 - There's occasional hitches and stutters, these will be improved upon.
-- Windows only for now. The tree also builds for the PS5, but that build is
-  not released.
+- The Windows build cannot draw under Proton / Wine (its renderer cannot use
+  the game's memory there): on Linux and the Steam Deck use the AppImage.
+- The tree also builds for the PS5, but that build is not released.
 
 Report anything else through issues, with the `logs` folder from beside
 `ng2.exe` (the newest `ng2_*.log`, and a `crash-*.dmp` if there is one).
@@ -113,6 +128,11 @@ headers and libraries of your own Build Tools for Visual Studio.
   runtime, as carried by the svr2011-ps5 project's `rexglue-ps5` branch.
 - **XenosRecomp** (hedge-dev), through goliathret's reeot-XenosRecomp fork —
   the shader recompiler behind the Kasumi Renderer's shader translation.
+- **[ng2recomp](https://github.com/gamboozino/ng2recomp)** by gamboozino —
+  another Ninja Gaiden II recompilation, whose published research into the
+  game's rendering (the Xenos multiply rule, predicate and control-flow
+  behaviour) was a reference for IzunaRecomp's own fixes. No code of it is
+  used: it is GPL-3.0, IzunaRecomp is MIT.
 - Lua, Zstandard, smol-v, SDL, Dear ImGui, the Vulkan headers and Memory
   Allocator, DirectX Shader Compiler, and the Inter typeface — see
   [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

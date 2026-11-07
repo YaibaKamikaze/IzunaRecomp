@@ -135,5 +135,6 @@ void ng2DiagFrameTick() {
   // The HUD's FPS from the game's own frame (sub_822F3A88, once per frame),
   // not the presenter's - on a high-refresh screen those differ.
   ng2::PerfFrameTick();
+  ng2::PollCutsceneSkip();  // [IzunaRecomp] test43: X skips cutscenes
   ReportFrameRate();
 }

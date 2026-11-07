@@ -2560,6 +2560,27 @@ index ca710155..3c05cde7 100644
  
  }  // namespace rex::external_frame
 +
+diff --git a/src/core/filesystem_posix.cpp b/src/core/filesystem_posix.cpp
+index 0dbd7a15..180f2e60 100644
+--- a/src/core/filesystem_posix.cpp
++++ b/src/core/filesystem_posix.cpp
+@@ -104,11 +104,14 @@ std::filesystem::path GetExecutablePath() {
+ }
+ 
+ std::filesystem::path GetExecutableFolder() {
+-#if defined(__ANDROID__)
++#if defined(__ANDROID__) || (defined(__linux__) && !REX_PLATFORM_PS5)
+   // [svr2011] The executable is the system's app_process; the app's folder
+   // (the game files) is passed by its Java activity.
++  // [IzunaRecomp] Linux too: an AppImage's own folder is a read-only mount,
++  // so its launcher (AppRun) points the app's folder - settings, logs,
++  // caches, mods - at ~/.local/share/IzunaRecomp.
+   if (auto dir = rex::platform::env::get("REX_APP_FOLDER")) {
+-    return std::filesystem::path(*dir);
++    if (!dir->empty()) return std::filesystem::path(*dir);
+   }
+ #endif
+   return GetExecutablePath().parent_path();
 diff --git a/src/core/logging.cpp b/src/core/logging.cpp
 index 1645848c..34e03978 100644
 --- a/src/core/logging.cpp
@@ -6956,7 +6977,7 @@ index 2408810b..444200dc 100644
  #undef XE_UI_VULKAN_FUNCTION
  
 diff --git a/src/ui/vulkan/vulkan_presenter.cpp b/src/ui/vulkan/vulkan_presenter.cpp
-index 7023dfe9..a4f96fa0 100644
+index 7023dfe9..7985884a 100644
 --- a/src/ui/vulkan/vulkan_presenter.cpp
 +++ b/src/ui/vulkan/vulkan_presenter.cpp
 @@ -18,8 +18,12 @@
@@ -6972,7 +6993,7 @@ index 7023dfe9..a4f96fa0 100644
  #include <rex/assert.h>
  #include <rex/cvar.h>
  #include <rex/logging.h>
-@@ -139,6 +143,26 @@ VkResult CreatePs5DisplaySurface(const rex::ui::vulkan::VulkanInstance::Function
+@@ -139,6 +143,32 @@ VkResult CreatePs5DisplaySurface(const rex::ui::vulkan::VulkanInstance::Function
  }  // namespace
  #endif
  
@@ -6996,10 +7017,16 @@ index 7023dfe9..a4f96fa0 100644
 +                      "[IzunaRecomp] auto: wait for the screen before each paint (VK_KHR_present_wait, else one "
 +                      "present per display refresh); off: the driver's own blocking present")
 +    .lifecycle(rex::cvar::Lifecycle::kHotReload);
++// [IzunaRecomp] test43: the player's present mode (the swapchain's; next start).
++REXCVAR_DEFINE_STRING(present_mode, "auto", "UI/Presenter",
++                      "[IzunaRecomp] auto (FIFO; mailbox with vsync_vrr off), fifo, fifo_relaxed, mailbox or immediate")
++    .allowed({"auto", "fifo", "fifo_relaxed", "mailbox", "immediate"});
++// (the swapchain's present mode: PacePaint does not wait for Mailbox / Immediate)
++static VkPresentModeKHR g_present_mode = VK_PRESENT_MODE_FIFO_KHR;
  REXCVAR_DEFINE_BOOL(present_render_pass_clear, true, "UI/Presenter",
                      "Clear render pass during presentation");
  
-@@ -1437,6 +1461,15 @@ VkSwapchainKHR VulkanPresenter::PaintContext::CreateSwapchainForVulkanSurface(
+@@ -1437,6 +1467,15 @@ VkSwapchainKHR VulkanPresenter::PaintContext::CreateSwapchainForVulkanSurface(
    swapchain_create_info.surface = surface;
    swapchain_create_info.minImageCount =
        std::max(kSubmissionCount, surface_capabilities.minImageCount);
@@ -7015,7 +7042,42 @@ index 7023dfe9..a4f96fa0 100644
    if (surface_capabilities.maxImageCount) {
      swapchain_create_info.minImageCount =
          std::min(swapchain_create_info.minImageCount, surface_capabilities.maxImageCount);
-@@ -1696,8 +1729,91 @@ bool VulkanPresenter::ThrottleUIOnlyPaints() const {
+@@ -1501,7 +1540,25 @@ VkSwapchainKHR VulkanPresenter::PaintContext::CreateSwapchainForVulkanSurface(
+   // [svr2011] vsync_vrr (default): FIFO - each image for the next refresh,
+   // which variable refresh monitors follow; off: mailbox where there is one.
+   const bool vsync = REXCVAR_GET(vsync);
+-  if (vsync) {
++  // [IzunaRecomp] test43: the player's choice of present mode (Settings >
++  // Display > Present mode). The game is paced by its own clock (the guest
++  // vblank), so none of these changes its speed: FIFO waits for each refresh,
++  // FIFO relaxed lets a late picture tear rather than wait a refresh, Mailbox
++  // shows the newest picture at each refresh without tearing, Immediate shows
++  // it at once (tearing). Not offered by the driver: FIFO, said in the log.
++  const std::string chosen = REXCVAR_GET(present_mode);
++  VkPresentModeKHR wanted = VK_PRESENT_MODE_MAX_ENUM_KHR;
++  if (chosen == "fifo") wanted = VK_PRESENT_MODE_FIFO_KHR;
++  else if (chosen == "fifo_relaxed") wanted = VK_PRESENT_MODE_FIFO_RELAXED_KHR;
++  else if (chosen == "mailbox") wanted = VK_PRESENT_MODE_MAILBOX_KHR;
++  else if (chosen == "immediate") wanted = VK_PRESENT_MODE_IMMEDIATE_KHR;
++  if (wanted != VK_PRESENT_MODE_MAX_ENUM_KHR) {
++    const bool offered = std::find(present_modes.cbegin(), present_modes.cend(), wanted) != present_modes.cend();
++    if (!offered) {
++      REXLOG_WARN("VulkanPresenter: present mode {} is not offered by this driver - FIFO instead", chosen);
++    }
++    swapchain_create_info.presentMode = offered ? wanted : VK_PRESENT_MODE_FIFO_KHR;
++  } else if (vsync) {
+     swapchain_create_info.presentMode =
+         !REXCVAR_GET(vsync_vrr) &&
+                 std::find(present_modes.cbegin(), present_modes.cend(), VK_PRESENT_MODE_MAILBOX_KHR) !=
+@@ -1538,6 +1595,7 @@ VkSwapchainKHR VulkanPresenter::PaintContext::CreateSwapchainForVulkanSurface(
+     return VK_NULL_HANDLE;
+   }
+   const VkPresentModeKHR mode = swapchain_create_info.presentMode;
++  g_present_mode = mode;
+   REXLOG_INFO(
+       "VulkanPresenter: Created {}x{} swapchain with format {}, color space "
+       "{}, presentation mode {} ({}; vsync {})",
+@@ -1696,8 +1754,94 @@ bool VulkanPresenter::ThrottleUIOnlyPaints() const {
  // [svr2011] paint timing (phones: where the presenter's time goes)
  static double g_svr_paint_ms[5];
  static uint32_t g_svr_paints;
@@ -7046,6 +7108,9 @@ index 7023dfe9..a4f96fa0 100644
 +#endif
 +  const std::string mode = REXCVAR_GET(present_pacing);
 +  if (mode == "off" || swapchain == VK_NULL_HANDLE) return;
++  // [IzunaRecomp] test43: Mailbox and Immediate never wait for the screen -
++  // that is what they are chosen for.
++  if (g_present_mode == VK_PRESENT_MODE_MAILBOX_KHR || g_present_mode == VK_PRESENT_MODE_IMMEDIATE_KHR) return;
 +  const auto t0 = std::chrono::steady_clock::now();
 +  if (g_ids_swapchain != swapchain) {
 +    g_ids_swapchain = swapchain;
@@ -7107,7 +7172,7 @@ index 7023dfe9..a4f96fa0 100644
    // Begin the submission in place of the one not currently potentially used on
    // the GPU.
    uint64_t current_paint_submission_index =
-@@ -1742,7 +1858,15 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
+@@ -1742,7 +1886,15 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
    VkResult acquire_result =
        dfn.vkAcquireNextImageKHR(device, paint_context_.swapchain, UINT64_MAX, acquire_semaphore,
                                  VK_NULL_HANDLE, &swapchain_image_index);
@@ -7124,7 +7189,7 @@ index 7023dfe9..a4f96fa0 100644
    switch (acquire_result) {
      case VK_SUCCESS:
      case VK_SUBOPTIMAL_KHR:
-@@ -2427,6 +2551,13 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
+@@ -2427,6 +2579,13 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
    present_info.pSwapchains = &paint_context_.swapchain;
    present_info.pImageIndices = &swapchain_image_index;
    present_info.pResults = nullptr;
@@ -7138,7 +7203,7 @@ index 7023dfe9..a4f96fa0 100644
    VkResult present_result;
    {
      // [svr2011] Mali drivers (r20) block in vkQueuePresentKHR until the GPU
-@@ -2441,8 +2572,18 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
+@@ -2441,8 +2600,18 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
        const auto& props = vulkan_device_->properties();
        const uint32_t r = VK_API_VERSION_MAJOR(props.driverVersion), p = VK_API_VERSION_MINOR(props.driverVersion);
        const std::string v = REXCVAR_GET(vulkan_present_wait);
@@ -7158,7 +7223,7 @@ index 7023dfe9..a4f96fa0 100644
        REXLOG_INFO("VulkanPresenter: driver version 0x{:08X} (r{}p{}), vendor 0x{:04X}: wait before present {} ({})",
                    props.driverVersion, r, p, props.vendorID, wait ? "on" : "off", v);
        return wait;
-@@ -2455,18 +2596,37 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
+@@ -2455,18 +2624,64 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
      }
      const auto svr_t2 = std::chrono::steady_clock::now();
      const VulkanDevice::Queue::Acquisition queue_acquisition =
@@ -7185,6 +7250,32 @@ index 7023dfe9..a4f96fa0 100644
 +                    g_present_block_ms);
 +      }
 +    }
++    // [IzunaRecomp] test35: a picture shown late though the game made it on
++    // time - what a variable-refresh screen shows as a stutter and the game's
++    // frame report cannot see: a present over 20 ms after the last, 1.6x the
++    // usual gap and 1.3x the gap before it (so a steady 30 fps cutscene is no
++    // stutter after its first picture). The first 40 are logged with this
++    // present's own time.
++    static std::chrono::steady_clock::time_point last_present_end{};
++    static double usual_gap_ms = 16.7, last_gap_ms = 16.7;
++    static uint32_t late_paints = 0, late_logged = 0;
++    if (last_present_end != std::chrono::steady_clock::time_point{}) {
++      const double gap = std::chrono::duration<double, std::milli>(svr_t4 - last_present_end).count();
++      const bool late = gap > 20.0 && gap > usual_gap_ms * 1.6 && gap > last_gap_ms * 1.3;
++      last_gap_ms = gap;
++      if (gap < 100.0) usual_gap_ms += (gap - usual_gap_ms) / 16.0;
++      if (late) {
++        ++late_paints;
++        if (late_logged < 40) {
++          ++late_logged;
++          REXLOG_INFO("VulkanPresenter: a picture {:.1f} ms after the last (usually {:.1f}): its present took {:.2f} "
++                      "ms, the queue {:.2f} ms",
++                      gap, usual_gap_ms, std::chrono::duration<double, std::milli>(svr_t4 - svr_t3).count(),
++                      std::chrono::duration<double, std::milli>(svr_t3 - svr_t2).count());
++        }
++      }
++    }
++    last_present_end = svr_t4;
      if (++g_svr_paints == 600) {
 -      REXLOG_INFO("VulkanPresenter: per paint: acquire {:.2f} ms, queue wait {:.2f} ms (submit) + {:.2f} ms "
 -                  "(present), GPU wait before present {:.2f} ms, present {:.2f} ms",
@@ -7192,12 +7283,13 @@ index 7023dfe9..a4f96fa0 100644
 -                  g_svr_paint_ms[3] / 600);
 +      REXLOG_INFO("VulkanPresenter: per paint: paced {:.2f} ms (waiting for the screen, no lock), acquire {:.2f} ms "
 +                  "({} of 600 waited for an image), queue wait {:.2f} ms (submit) + {:.2f} ms (present), GPU wait "
-+                  "before present {:.2f} ms, present {:.2f} ms",
++                  "before present {:.2f} ms, present {:.2f} ms; {} shown late",
 +                  g_pace_ms / 600, g_svr_paint_ms[0] / 600, g_acquires_waited, g_svr_paint_ms[1] / 600,
-+                  g_svr_paint_ms[2] / 600, g_svr_paint_ms[4] / 600, g_svr_paint_ms[3] / 600);
++                  g_svr_paint_ms[2] / 600, g_svr_paint_ms[4] / 600, g_svr_paint_ms[3] / 600, late_paints);
 +      g_pace_ms = 0;
        g_svr_paints = 0;
 +      g_acquires_waited = 0;
++      late_paints = 0;
        for (double& v : g_svr_paint_ms) v = 0;
      }
    }

@@ -80,6 +80,121 @@ void ExitNow(int code) {
 
 }  // namespace ng2
 
+#elif !defined(_WIN32)
+// [IzunaRecomp] The Linux desktop build (the AppImage): the displays from SDL,
+// the folder picker the desktop's own (zenity, else kdialog), a relaunch by
+// fork + exec.
+
+#include <unistd.h>
+
+#include <SDL3/SDL_video.h>
+
+namespace ng2 {
+
+std::optional<std::filesystem::path> PickFolder(const std::string& title, const std::filesystem::path& start) {
+  auto run = [](const std::string& command) -> std::optional<std::filesystem::path> {
+    FILE* p = popen(command.c_str(), "r");
+    if (!p) return std::nullopt;
+    char buf[4096] = {};
+    const bool got = std::fgets(buf, sizeof(buf), p) != nullptr;
+    const int status = pclose(p);
+    if (!got || status != 0) return std::nullopt;
+    std::string s(buf);
+    while (!s.empty() && (s.back() == '\n' || s.back() == '\r')) s.pop_back();
+    if (s.empty()) return std::nullopt;
+    return std::filesystem::path(s);
+  };
+  auto quoted = [](const std::string& s) {
+    std::string q = "'";
+    for (char c : s) q += c == '\'' ? std::string("'\\''") : std::string(1, c);
+    return q + "'";
+  };
+  const std::string from = start.empty() ? std::string(std::getenv("HOME") ? std::getenv("HOME") : "/")
+                                         : start.string() + "/";
+  if (auto r = run("zenity --file-selection --directory --title=" + quoted(title) + " --filename=" + quoted(from) +
+                   " 2>/dev/null")) {
+    return r;
+  }
+  return run("kdialog --getexistingdirectory " + quoted(from) + " --title " + quoted(title) + " 2>/dev/null");
+}
+
+bool ThisProcessIsForeground() { return true; }
+
+std::vector<MonitorInfo> Monitors() {
+  std::vector<MonitorInfo> out;
+  int count = 0;
+  SDL_DisplayID* ids = SDL_GetDisplays(&count);
+  const SDL_DisplayID primary = SDL_GetPrimaryDisplay();
+  for (int i = 0; ids && i < count; ++i) {
+    SDL_Rect full{}, usable{};
+    if (!SDL_GetDisplayBounds(ids[i], &full)) continue;
+    if (!SDL_GetDisplayUsableBounds(ids[i], &usable)) usable = full;
+    MonitorInfo m;
+    m.index = int(out.size());
+    m.full_width = full.w;
+    m.full_height = full.h;
+    m.width = usable.w;
+    m.height = usable.h;
+    m.scale = std::max(SDL_GetDisplayContentScale(ids[i]), 1.0f);
+    m.primary = ids[i] == primary;
+    out.push_back(m);
+  }
+  SDL_free(ids);
+  if (out.empty()) {
+    MonitorInfo m;
+    m.full_width = m.width = 1920;
+    m.full_height = m.height = 1080;
+    m.primary = true;
+    out.push_back(m);
+  }
+  return out;
+}
+
+float SystemScale() {
+  const SDL_DisplayID primary = SDL_GetPrimaryDisplay();
+  return primary ? std::max(SDL_GetDisplayContentScale(primary), 1.0f) : 1.0f;
+}
+
+bool MonitorWorkArea(int index, int& width, int& height, float& scale) {
+  const auto monitors = Monitors();
+  if (index < 0 || index >= int(monitors.size())) return false;
+  width = monitors[size_t(index)].width;
+  height = monitors[size_t(index)].height;
+  scale = monitors[size_t(index)].scale;
+  return true;
+}
+
+bool LaunchDetached(const std::filesystem::path& exe, const std::string& args) {
+  // (from an AppImage: the AppImage file itself - its mount goes when this
+  // process does, so the binary inside it must not be run directly)
+  const char* appimage = std::getenv("APPIMAGE");
+  std::vector<std::string> words{appimage && *appimage ? std::string(appimage) : exe.string()};
+  for (size_t at = 0; at < args.size();) {
+    const size_t end = std::min(args.find(' ', at), args.size());
+    if (end > at) words.push_back(args.substr(at, end - at));
+    at = end + 1;
+  }
+  const pid_t pid = fork();
+  if (pid < 0) return false;
+  if (pid == 0) {
+    setsid();
+    std::vector<char*> argv;
+    for (auto& w : words) argv.push_back(w.data());
+    argv.push_back(nullptr);
+    execv(argv[0], argv.data());
+    _exit(127);
+  }
+  return true;
+}
+
+void ExitNow(int code) {
+  std::fflush(nullptr);
+  rex::FlushLogging();
+  _exit(code);
+}
+
+}  // namespace ng2
+
 #else  // Windows
 
 #include <windows.h>

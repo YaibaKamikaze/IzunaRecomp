@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=IzunaRecomp
+Comment=Ninja Gaiden II, natively recompiled (needs your own copy of the game)
+Exec=ng2
+Icon=izunarecomp
+Categories=Game;
+Terminal=false

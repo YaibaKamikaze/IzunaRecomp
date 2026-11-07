@@ -172,11 +172,20 @@ void InstallCrashDumps(const std::filesystem::path& logs) {
 #include <thread>
 
 #include <rex/logging.h>
+#if defined(__linux__) && !defined(__PROSPERO__)
+#include <SDL3/SDL_messagebox.h>
+#endif
 
 namespace izuna::pc {
 void TuneProcess() {}
 void EnsureSingleInstance() {}
-void ShowError(const std::string& text) { REXLOG_ERROR("{}", text); }
+void ShowError(const std::string& text) {
+  REXLOG_ERROR("{}", text);
+#if defined(__linux__) && !defined(__PROSPERO__)
+  // [IzunaRecomp] The Linux desktop build: a message box, as on Windows.
+  SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "IzunaRecomp", text.c_str(), nullptr);
+#endif
+}
 bool ScreenSize(int*, int*) { return false; }
 void RaiseThreadPriority(int) {}
 void SleepNs(int64_t ns) {

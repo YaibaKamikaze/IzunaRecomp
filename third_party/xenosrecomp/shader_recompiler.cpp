@@ -219,7 +219,7 @@ void ShaderRecompiler::recompile(const VertexFetchInstruction& instr, uint32_t a
         vertexLayout.push_back(rec);
         print("ng2VertexFetchK({}, {})", k, ng2FetchIndex.empty() ? std::string("0.0") : ng2FetchIndex);
         out += '.';
-        printDstSwizzle(instr.dstSwizzle, true);
+        printDstSwizzle(instr.dstSwizzle, false);  // [ng2] (in order: ng2VertexFetchK applies the draw-time swizzle)
         out += ";\n";
         printDstSwizzle01(instr.dstRegister, instr.dstSwizzle);
         if (instr.isPredicated)
@@ -1039,7 +1039,11 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
             break;
 
         case AluVectorOpcode::Mul:
+        #ifdef NG2_RECOMP
+            print("ng2Mul({}, {})", op(VECTOR_0), op(VECTOR_1));  // [ng2] D3D9's 0 x anything = 0 (shader_common.h)
+        #else
             print("{} * {}", op(VECTOR_0), op(VECTOR_1));
+        #endif
             break;
 
         case AluVectorOpcode::Max:
@@ -1080,7 +1084,11 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
             break;
 
         case AluVectorOpcode::Mad:
+        #ifdef NG2_RECOMP
+            print("ng2Mul({}, {}) + {}", op(VECTOR_0), op(VECTOR_1), op(VECTOR_2));
+        #else
             print("{} * {} + {}", op(VECTOR_0), op(VECTOR_1), op(VECTOR_2));
+        #endif
             break;
 
         case AluVectorOpcode::CndEq:
@@ -1113,11 +1121,19 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
                 break;
             }
         #endif
+        #ifdef NG2_RECOMP
+            print("ng2Dot({}, {})", op(VECTOR_0), op(VECTOR_1));
+        #else
             print("dot({}, {})", op(VECTOR_0), op(VECTOR_1));
+        #endif
             break;
 
         case AluVectorOpcode::Dp2Add:
+        #ifdef NG2_RECOMP
+            print("ng2Dot({}, {}) + {}", op(VECTOR_0), op(VECTOR_1), op(VECTOR_2));
+        #else
             print("dot({}, {}) + {}", op(VECTOR_0), op(VECTOR_1), op(VECTOR_2));
+        #endif
             break;
 
         case AluVectorOpcode::Cube:
@@ -1156,7 +1172,11 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
             break;
 
         case AluVectorOpcode::Dst:
+        #ifdef NG2_RECOMP
+            print("ng2Dst({}, {})", op(VECTOR_0), op(VECTOR_1));
+        #else
             print("dst({}, {})", op(VECTOR_0), op(VECTOR_1));
+        #endif
             break;
         }
 
@@ -1240,12 +1260,20 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
             break;
 
         case AluScalarOpcode::Muls:
+        #ifdef NG2_RECOMP
+            print("ng2Mul({}, {})", op(SCALAR_0), op(SCALAR_1));
+        #else
             print("{} * {}", op(SCALAR_0), op(SCALAR_1));
+        #endif
             break;
 
         case AluScalarOpcode::MulsPrev:
         case AluScalarOpcode::MulsPrev2:
+        #ifdef NG2_RECOMP
+            print("ng2Mul({}, ps)", op(SCALAR_0));
+        #else
             print("{} * ps", op(SCALAR_0));
+        #endif
             break;
 
         case AluScalarOpcode::Maxs:
@@ -1369,7 +1397,11 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
 
         case AluScalarOpcode::Mulsc0:
         case AluScalarOpcode::Mulsc1:
+        #ifdef NG2_RECOMP
+            print("ng2Mul({}, {})", op(SCALAR_CONSTANT_0), op(SCALAR_CONSTANT_1));
+        #else
             print("{} * {}", op(SCALAR_CONSTANT_0), op(SCALAR_CONSTANT_1));
+        #endif
             break;
 
         case AluScalarOpcode::Addsc0:
@@ -2814,6 +2846,20 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
                 count = cfInstr.condExecPred.count;
                 sequence = cfInstr.condExecPred.sequence;
                 shouldReturn = (cfInstr.opcode == ControlFlowOpcode::CondExecPredEnd);
+            #ifdef NG2_RECOMP
+                // [ng2] The block runs only while the predicate is what the
+                // instruction asks (Xenia: "exec if predicate matches"); it
+                // ran always (a `cexec` on the predicate, not a bool, had no
+                // test here).
+                {
+                    indent();
+                    println("if ({}p0)", cfInstr.condExecPred.condition ? "" : "!");
+                    indent();
+                    out += "{\n";
+                    ++indentation;
+                    shouldCloseCurlyBracket = true;
+                }
+            #endif
                 break;
 
             case ControlFlowOpcode::LoopStart:

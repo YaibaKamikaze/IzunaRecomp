@@ -14,6 +14,7 @@
 
 #include <rex/ui/imgui_dialog.h>
 
+#include "izuna/izuna_progress.h"
 #include "ng2_menu.h"  // Fonts()
 
 namespace izuna::shaders {
@@ -31,8 +32,14 @@ class ProgressOverlay final : public rex::ui::ImGuiDialog {
  protected:
   void OnDraw(ImGuiIO& io) override {
     (void)io;
-    const int total = progress_->total.load(std::memory_order_relaxed);
-    const int done = progress_->done.load(std::memory_order_relaxed);
+    // [IzunaRecomp] test42: the pipelines after the shaders (the game is held
+    // until they are built: izuna_progress.h)
+    const auto& pipes = izuna::progress::g_pipelines;
+    const bool pipelines = pipes.active.load(std::memory_order_acquire);
+    const int total = pipelines ? pipes.total.load(std::memory_order_relaxed)
+                                : progress_->total.load(std::memory_order_relaxed);
+    const int done = pipelines ? pipes.done.load(std::memory_order_relaxed)
+                               : progress_->done.load(std::memory_order_relaxed);
     if (total <= 0) return;
     const float fraction = float(done) / float(total);
 
@@ -48,7 +55,7 @@ class ProgressOverlay final : public rex::ui::ImGuiDialog {
                          ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
                          ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoMove)) {
       if (ImFont* f = ng2::Fonts().title) ImGui::PushFont(f);
-      ImGui::TextColored(ImVec4(0.45f, 0.70f, 1.00f, 1.0f), "PREPARING SHADERS");
+      ImGui::TextColored(ImVec4(0.45f, 0.70f, 1.00f, 1.0f), pipelines ? "PREPARING PIPELINES" : "PREPARING SHADERS");
       if (ng2::Fonts().title) ImGui::PopFont();
       ImGui::Spacing();
       ImGui::PushStyleColor(ImGuiCol_PlotHistogram, ImVec4(0.26f, 0.55f, 0.95f, 1.0f));
@@ -58,9 +65,11 @@ class ProgressOverlay final : public rex::ui::ImGuiDialog {
       ImGui::PopStyleColor();
       ImGui::Spacing();
       ImGui::TextColored(ImVec4(0.80f, 0.86f, 0.82f, 0.85f),
-                         "Compiling the game's shaders for your GPU from your copy of the game.");
+                         pipelines ? "Building the GPU pipelines the game uses, so it does not stutter later."
+                                   : "Compiling the game's shaders for your GPU from your copy of the game.");
       ImGui::TextColored(ImVec4(0.80f, 0.86f, 0.82f, 0.60f),
-                         "Only on the first start (and after an update) - later starts skip this.");
+                         pipelines ? "Later starts load them from the cache - a moment at most."
+                                   : "Only on the first start (and after an update) - later starts skip this.");
     }
     ImGui::End();
     ImGui::PopStyleVar(2);

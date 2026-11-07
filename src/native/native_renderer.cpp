@@ -631,12 +631,13 @@ void InstallEffectPump() {
         if (!done) {
           g.effects_late.fetch_add(1, std::memory_order_relaxed);
           static int late_logged = 0;  // (which work it waited for, and where the records were)
-          if (late_logged < 8) {
+          if (late_logged < 40) {
             ++late_logged;
             REXLOG_INFO("[native] a side effect ran late (30 ms): waited for record {}; records done {}, last "
-                        "kickoff or swap {}; segments done {} of {}",
+                        "kickoff or swap {}; segments done {} of {}; {}",
                         p.frame, g.done_records.load(), DrawThreaded() ? LastKickoffRecord() : 0,
-                        g.completed.load(), g.submitted.load());
+                        g.completed.load(), g.submitted.load(),
+                        DrawThreaded() ? WorkerActivity() : std::string("(single-threaded)"));
           }
         }
         effect = std::move(p.effect);

@@ -51,9 +51,6 @@ struct Ng2Tuning {
         {"protect_zero", "false",
          "[compat] requires_protect_zero_false - the game reads guest 0 during "
          "boot; matches the low-memory commit in OnPostSetup"},
-        {"audio_maxqframes", "16",
-         "[compat] queued audio frames; 16 is the documented floor and the value "
-         "NG2 players use to kill the audio delay"},
 #if !defined(__PROSPERO__)  // [ps5 port] D3D12 only
         {"d3d12_queue_priority", "1",
          "high priority command queue; 2 would need administrator rights"},
@@ -119,6 +116,9 @@ struct Ng2Tuning {
                    "[IzunaRecomp] V-Sync Auto: the guest vblank on the display's refresh"});
     out.push_back({"native_vblank_hz", s.pc_vsync == 2 ? "59.94" : s.pc_vsync == 1 ? "60" : "0",
                    "[IzunaRecomp] V-Sync: the guest vblank's own rate"});
+    out.push_back({"present_mode", s.pc_present_mode, "[IzunaRecomp] the swapchain's present mode (Display)"});
+    out.push_back({"izuna_fullscreen_refresh_switch", s.pc_refresh_switch ? "true" : "false",
+                   "[IzunaRecomp] fullscreen: a refresh rate 60 divides on a fixed 144-170 Hz screen"});
     out.push_back({"present_low_latency", s.pc_low_latency ? "true" : "false",
                    "[IzunaRecomp] Input latency Low: one picture queued for the screen (present wait)"});
     {
@@ -131,6 +131,16 @@ struct Ng2Tuning {
                      "[IzunaRecomp] threads building pipelines, by the CPU"});
     }
 #endif
+    {
+      // [IzunaRecomp] test43: the A/V sync delay - the audio queue held that
+      // much deeper (5.33 ms a frame, on the 6 the resync keeps), and the
+      // game allowed as many frames ahead (16 before: the documented floor).
+      const int target = 6 + (std::clamp(s.audio_delay_ms, 0, 120) * 3 + 8) / 16;
+      out.push_back({"audio_resync_target_frames", std::to_string(target),
+                     "[IzunaRecomp] audio frames kept queued: 6 + the A/V sync delay"});
+      out.push_back({"audio_maxqframes", std::to_string(std::max(16, target + 8)),
+                     "[compat] queued audio frames the game may make ahead (16 the documented floor)"});
+    }
     out.push_back({"audio_resync", s.ps5_audio_resync ? "true" : "false",
                    "[ps5] cutscene audio fix: drop the audio backlog after a stall"});
 

@@ -279,7 +279,22 @@ float4 ng2VertexFetch(uint slot, float indexValue, uint stride, int offset, uint
 float4 ng2VertexFetchK(uint k, float indexValue)
 {
     const uint4 p = vk::RawBufferLoad<uint4>(g_PushConstants.SharedConstants + 1664 + k * 16, 4);
-    return ng2VertexFetch(p.x & 0xFFu, indexValue, p.x >> 8, int(p.y), p.z, p.w & 0xFFu, int(p.w << 16) >> 24);
+    const float4 r = ng2VertexFetch(p.x & 0xFFu, indexValue, p.x >> 8, int(p.y), p.z, p.w & 0xFFu, int(p.w << 16) >> 24);
+    // [ng2] The instruction's destination swizzle as it is in guest memory at
+    // the draw (p.w bits 16-27, 3 bits a component: 0-3 X-W, 4 zero, 5 one):
+    // Direct3D patches it with the stride, offset and format when a vertex
+    // declaration is bound - a D3DCOLOR element's red and blue trade places
+    // there - so the one the shader was compiled with can be stale (issue #4:
+    // the health bar's red damage drawn blue). Applied here; the generated
+    // code takes the components in order.
+    const uint sw = p.w >> 16;
+    float4 o = r;
+    [unroll] for (uint i = 0; i < 4; ++i)
+    {
+        const uint s = (sw >> (i * 3u)) & 7u;
+        o[i] = s < 4u ? r[s] : s == 4u ? 0.0 : s == 5u ? 1.0 : r[i];
+    }
+    return o;
 }
 #endif
 
@@ -847,11 +862,43 @@ void eotTwoProduct(float a, float b, out float p, out float e)
     e = err;
 }
 
-float dotF(float4 a, float4 b) { return dot(a, b); }
-float dotF(float3 a, float3 b) { return dot(a, b); }
+// [ng2] Direct3D 9's multiplication, as the Xbox 360's GPU does it: 0 (or a
+// denormal, flushed) times anything is +0 - infinity and NaN included, where
+// a PC GPU makes NaN (Xenia's shader interpreter: "Direct3D 9 behavior").
+// Mul, Mad, Dp2Add / Dp3 / Dp4, Dst and the scalar Muls / Mulsc / MulsPrev(2)
+// (shader_recompiler.cpp); a NaN from 0 x infinity spread through a
+// lighting or fog term was the issue #6 suspect (ch. 4 rails, as on Xenia).
+// (`precise` inside: DXC does not carry a caller's precise into a called
+// function, and a product left free to fuse with the add after it would round
+// differently from the Xbox's separate multiply and add - two passes computing
+// one position apart, depth fighting. Noted by gamboozino's ng2recomp.)
+template <typename T>
+T ng2Mul(T a, T b)
+{
+    precise T p = a * b;
+    return select(or(abs(a) < 1.175494351e-38, abs(b) < 1.175494351e-38), (T)0.0, p);
+}
+template <typename T>
+float ng2Dot(T a, T b)
+{
+    precise float s = dot(ng2Mul(a, b), (T)1.0);
+    return s;
+}
+float4 ng2Dst(float4 a, float4 b)
+{
+    return float4(1.0, ng2Mul(a.y, b.y), a.z, b.w);
+}
+
+float dotF(float4 a, float4 b) { return ng2Dot(a, b); }
+float dotF(float3 a, float3 b) { return ng2Dot(a, b); }
 
 float dotP(float4 a, float4 b)
 {
+    {  // [ng2] (D3D9's 0 x anything = 0, above)
+        const bool4 z = or(abs(a) < 1.175494351e-38, abs(b) < 1.175494351e-38);
+        a = select(z, 0.0, a);
+        b = select(z, 0.0, b);
+    }
     float p, s, h, r, q;
     eotTwoProduct(a.x, b.x, p, s);
     eotTwoProduct(a.y, b.y, h, r);
@@ -869,6 +916,11 @@ float dotP(float4 a, float4 b)
 
 float dotP(float3 a, float3 b)
 {
+    {  // [ng2] (D3D9's 0 x anything = 0, above)
+        const bool3 z = or(abs(a) < 1.175494351e-38, abs(b) < 1.175494351e-38);
+        a = select(z, 0.0, a);
+        b = select(z, 0.0, b);
+    }
     float p, s, h, r, q;
     eotTwoProduct(a.x, b.x, p, s);
     eotTwoProduct(a.y, b.y, h, r);

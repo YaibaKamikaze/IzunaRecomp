@@ -1,5 +1,39 @@
 # Changelog
 
+## v0.2.1 — Linux, smoother starts, accuracy fixes
+
+**New**
+- **Linux:** an AppImage (x86-64, glibc 2.38+). On the Steam Deck it runs
+  natively, without Proton — the Windows build cannot draw under Proton.
+- **Skip any cutscene with X** (Square), also the ones the game will not let
+  you skip. On by default (Settings › Game).
+- **Present mode:** FIFO (V-Sync), FIFO relaxed, Mailbox or Immediate
+  (Settings › Display). None of them changes the game's speed.
+- **Fullscreen refresh:** a fixed 144-170 Hz screen (no G-Sync / FreeSync) is
+  switched to 120, 180 or 240 Hz in fullscreen, so 60 fps frames all show
+  equally long; the desktop's rate comes back on exit (issue #1).
+- **Audio delay (A/V sync):** the sound held back to meet the picture, 40 ms by
+  default (issue #5: sounds heard before what makes them).
+
+**Stutter**
+- The game no longer starts while its pipelines are still being built: it
+  waits, behind a "Preparing pipelines" bar, for the ones it is about to use.
+  That is what made "skip intro videos" and first sessions stutter.
+- The shipped pipeline list grew from 204 to 484.
+- Video memory reserved up front by the card's size (512 MB to 1.5 GB): 1440p
+  and 4K sessions no longer allocate in play.
+
+**Accuracy** (the game's shaders are rebuilt once on the first start)
+- Vertex colours in the order the console's Direct3D sets them at draw time:
+  the fix for the health bar's damage drawn blue instead of red (issue #4).
+- Direct3D 9's multiplication: 0 times anything is 0, infinity and NaN
+  included, as on the Xbox 360's GPU — a NaN no longer erases geometry or
+  colours (the cause of the missing part of Sonia's model, and a likely one
+  for the chapter 4 rails, issue #6).
+- Predicated exec blocks run only when their predicate says so.
+- No fused multiply-adds where the console rounds the multiply first.
+
+
 ## v0.2.0 — the first public release (Windows)
 
 IzunaRecomp's first release: Ninja Gaiden II recompiled for Windows and drawn

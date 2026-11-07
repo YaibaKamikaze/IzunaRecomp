@@ -182,10 +182,20 @@ struct MemRange {
 // creation; 49 fences at the 30 ms fallback in one frame). A session's images
 // fit the reserve (test23-27: 320-370 MB), so play allocates none; past it the
 // spare takes over.
+// [IzunaRecomp] test42: on a PC, by the card's video memory - an eighth of
+// the heap, 512 MB to 1.5 GB (issue #1's 1440p session held 676 MB of images
+// within a minute and went past the old fixed 512 MB, back to allocating in
+// play; at 4K they take more).
 #if defined(__PROSPERO__)
-constexpr int kReserveBlocks = 1;  // (the PS5's memory is the game's too)
+int ReserveBlocks(uint32_t) { return 1; }  // (the PS5's memory is the game's too)
 #else
-constexpr int kReserveBlocks = 8;  // (512 MB of video memory: test28's session used 368 MB, all of 6)
+int ReserveBlocks(uint32_t type) {
+  VkPhysicalDeviceMemoryProperties props;
+  g.vk.GetPhysicalDeviceMemoryProperties(g.ctx.physical_device, &props);
+  if (type >= props.memoryTypeCount) return 8;
+  const VkDeviceSize heap = props.memoryHeaps[props.memoryTypes[type].heapIndex].size;
+  return int(std::clamp<VkDeviceSize>(heap / 8 / kMemBlockSize, 8, 24));
+}
 #endif
 struct SpareBlocks {
   std::mutex mutex;
@@ -252,7 +262,8 @@ void PrewarmImageMemory() {
     if (type == UINT32_MAX || type >= VK_MAX_MEMORY_TYPES || type == done[0]) continue;
     done[depth ? 1 : 0] = type;
     int made = 0;
-    for (int i = 0; i < (depth ? 1 : kReserveBlocks); ++i) {
+    const int blocks = depth ? 1 : ReserveBlocks(type);
+    for (int i = 0; i < blocks; ++i) {
       const VkDeviceMemory memory = AllocateBlock(type);
       if (!memory) break;
       std::lock_guard<std::mutex> lock(g_spare_blocks.mutex);
@@ -1012,7 +1023,9 @@ bool FillVertexFetches(uint32_t object, const ShaderCacheEntry* e, uint8_t* out)
     const uint32_t flags = ((d1 >> 15) & 1) | ((d1 >> 12) & 1) << 1 | ((d1 >> 13) & 1) << 2 | ((d1 >> 14) & 1) << 3;
     const int32_t exp = int32_t(d1 << 2) >> 26;      // bits 24-29, signed
     const int32_t offset = int32_t(d2 << 1) >> 9;    // bits 8-30, signed
-    const uint32_t p[4] = {slot | stride << 8, uint32_t(offset), (d1 >> 16) & 63, flags | (uint32_t(exp) & 0xFF) << 8};
+    // (p[3] bits 16-27: the destination swizzle as patched - ng2VertexFetchK)
+    const uint32_t p[4] = {slot | stride << 8, uint32_t(offset), (d1 >> 16) & 63,
+                           flags | (uint32_t(exp) & 0xFF) << 8 | (d1 & 0xFFF) << 16};
     std::memcpy(out + k * 16, p, 16);
   }
   return true;
@@ -1973,6 +1986,7 @@ bool DrawInit(const DrawContext& context) {
                                                        : "the on/off dither (no dual-source blend on this device)");
   const int workers = std::clamp(REXCVAR_GET(native_pipeline_threads), 1, 6);
   for (int i = 0; i < workers; ++i) std::thread(PipelineWorker).detach();  // (they live as long as the app)
+  WaitForPrecompile();  // [IzunaRecomp] test42: the game starts with its pipelines built
   {  // GPU time per pass of logged frames (ReadPassTimes)
     auto props_fn = reinterpret_cast<PFN_vkGetPhysicalDeviceProperties>(
         g.ctx.get_instance_proc_addr(g.ctx.instance, "vkGetPhysicalDeviceProperties"));

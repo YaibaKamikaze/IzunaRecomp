@@ -25,13 +25,93 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <string>
 #include <thread>
 
+#include <rex/cvar.h>
 #include <rex/logging.h>
 #include <rex/ui/display_clock.h>
 
+REXCVAR_DEFINE_BOOL(izuna_fullscreen_refresh_switch, true, "Native renderer",
+                    "[IzunaRecomp] Fullscreen on a fixed-refresh screen whose rate 60 does not divide (144, 165, 170 "
+                    "Hz): switch it to a multiple of 60 (120, 180, 240 Hz) so every frame shows equally long");
+
 namespace izuna::pc {
 namespace {
+
+// [IzunaRecomp] test42: the refresh switch. A 60 fps game on a fixed 144-170
+// Hz screen shows its frames 2, then 3 refreshes (issue #1: a 169.79 Hz
+// monitor, "constant hiccups and bad frame pacing" with every frame on time).
+// G-Sync / FreeSync shows them evenly; without it, in fullscreen, the monitor
+// is switched to the best mode at the same size that 60 divides (240, 180,
+// 120, else 60 Hz), with CDS_FULLSCREEN - Windows puts the desktop's back
+// when the game exits - and back here when the window leaves fullscreen or
+// the monitor.
+struct RefreshSwitch {
+  std::wstring device;  // the monitor switched ("\\.\DISPLAY1"), empty: none
+  bool tried = false;   // (once per monitor: a refused switch is not retried)
+};
+RefreshSwitch g_switch;
+
+bool CoversMonitor(HWND hwnd, HMONITOR monitor) {
+  MONITORINFO mi = {sizeof(mi)};
+  RECT r;
+  if (!hwnd || !GetMonitorInfoW(monitor, &mi) || !GetWindowRect(hwnd, &r)) return false;
+  return r.left <= mi.rcMonitor.left && r.top <= mi.rcMonitor.top && r.right >= mi.rcMonitor.right &&
+         r.bottom >= mi.rcMonitor.bottom;
+}
+
+// Whether a refresh rate shows a 60 fps game evenly (59.94-style rates count).
+bool DividesBy60(double hz) {
+  const double k = hz / 60.0;
+  return k >= 0.95 && std::fabs(k - std::round(k)) < 0.02;
+}
+
+void RestoreRefresh() {
+  if (g_switch.device.empty()) return;
+  ChangeDisplaySettingsExW(g_switch.device.c_str(), nullptr, nullptr, 0, nullptr);
+  REXLOG_INFO("[izuna] display: the monitor's own refresh rate restored");
+  g_switch.device.clear();
+}
+
+// Returns true when the monitor was switched (the caller measures afresh).
+bool SwitchRefresh(HMONITOR monitor, double hz) {
+  MONITORINFOEXW mi = {};
+  mi.cbSize = sizeof(mi);
+  if (!GetMonitorInfoW(monitor, &mi)) return false;
+  DEVMODEW cur = {};
+  cur.dmSize = sizeof(cur);
+  if (!EnumDisplaySettingsW(mi.szDevice, ENUM_CURRENT_SETTINGS, &cur)) return false;
+  DEVMODEW best = {};
+  for (DWORD i = 0;; ++i) {
+    DEVMODEW dm = {};
+    dm.dmSize = sizeof(dm);
+    if (!EnumDisplaySettingsW(mi.szDevice, i, &dm)) break;
+    if (dm.dmPelsWidth != cur.dmPelsWidth || dm.dmPelsHeight != cur.dmPelsHeight ||
+        dm.dmBitsPerPel != cur.dmBitsPerPel || dm.dmDisplayFrequency > 245 ||
+        !DividesBy60(double(dm.dmDisplayFrequency))) {
+      continue;
+    }
+    if (dm.dmDisplayFrequency > best.dmDisplayFrequency) best = dm;
+  }
+  if (!best.dmDisplayFrequency) {
+    REXLOG_INFO("[izuna] display: the monitor refreshes at {:.2f} Hz, which 60 fps does not divide, and offers no "
+                "mode at {}x{} that does - G-Sync / FreeSync, or a 60 / 120 Hz desktop, shows the game evenly",
+                hz, cur.dmPelsWidth, cur.dmPelsHeight);
+    return false;
+  }
+  best.dmFields = DM_PELSWIDTH | DM_PELSHEIGHT | DM_BITSPERPEL | DM_DISPLAYFREQUENCY;
+  const LONG r = ChangeDisplaySettingsExW(mi.szDevice, &best, nullptr, CDS_FULLSCREEN, nullptr);
+  if (r != DISP_CHANGE_SUCCESSFUL) {
+    REXLOG_INFO("[izuna] display: switching the monitor to {} Hz was refused ({})", best.dmDisplayFrequency, r);
+    return false;
+  }
+  g_switch.device = mi.szDevice;
+  REXLOG_INFO("[izuna] display: the monitor refreshed at {:.2f} Hz, which 60 fps does not divide - switched it to {} "
+              "Hz while the game is fullscreen (Settings > Display > Fullscreen refresh)",
+              hz, best.dmDisplayFrequency);
+  return true;
+}
 
 // The game's top-level window: the first visible one of this process.
 HWND GameWindow() {
@@ -98,7 +178,14 @@ void Run() {
       checked = now;
       HWND hwnd = GameWindow();
       HMONITOR m = MonitorFromWindow(hwnd ? hwnd : GetDesktopWindow(), MONITOR_DEFAULTTOPRIMARY);
+      // (left fullscreen, or another monitor: the switched one gets its rate back)
+      if (!g_switch.device.empty() && (m != monitor || !CoversMonitor(hwnd, monitor) ||
+                                       !REXCVAR_GET(izuna_fullscreen_refresh_switch))) {
+        RestoreRefresh();
+        g_switch.tried = false;
+      }
       if (m != monitor || !output) {
+        g_switch.tried = false;
         if (output) output->Release();
         output = OutputFor(m);
         monitor = m;
@@ -154,6 +241,19 @@ void Run() {
     if (trusted && (!logged_period || std::llabs(measured - logged_period) * 50 > logged_period)) {
       logged_period = measured;
       REXLOG_INFO("[izuna] display clock: the window's monitor refreshes at {:.2f} Hz", 1e9 / double(measured));
+    }
+    if (trusted && !g_switch.tried && g_switch.device.empty() && REXCVAR_GET(izuna_fullscreen_refresh_switch) &&
+        !DividesBy60(1e9 / double(measured)) && CoversMonitor(GameWindow(), monitor)) {
+      g_switch.tried = true;
+      if (SwitchRefresh(monitor, 1e9 / double(measured))) {
+        last = 0;  // (the new rate, measured afresh)
+        measured = 0;
+        steady = 0;
+        logged_period = 0;
+        dc::period_ns.store(0, std::memory_order_relaxed);
+        std::this_thread::sleep_for(std::chrono::seconds(1));  // (the mode change settles)
+        continue;
+      }
     }
     if (!trusted && wobbles >= 30 && !logged_variable) {
       logged_variable = true;

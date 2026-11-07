@@ -64,6 +64,18 @@ Display > V-Sync
            not smooth on your screen.
 Display > Resolution     Auto (your screen's) or 720p to 2160p, each drawn at that
                          true resolution. Above your screen is sharper, heavier.
+Display > Present mode   FIFO (V-Sync), FIFO relaxed, Mailbox or Immediate (tearing):
+                         how finished frames reach the screen. None changes the
+                         game's speed. From the next start.
+Display > Fullscreen refresh
+                         On a 144-170 Hz screen without G-Sync / FreeSync, fullscreen
+                         switches it to 120, 180 or 240 Hz so every frame shows
+                         equally long; your desktop's rate comes back on exit.
+Game > Skip cutscenes with X
+                         X (Square) skips any cutscene, also the ones the game
+                         does not let you skip. On by default.
+Sound > Audio delay (A/V sync)
+                         Holds the sound back to meet the picture (40 ms default).
 Sound > Volume / Stereo level / Bass on stereo
                          Full stereo level plays the game's mix at its own
                          level with a limiter keeping loud moments clean; Bass

@@ -1,7 +1,7 @@
 #include "ng2_autoskip.h"
 #include "native/native_renderer.h"
 
-#if !defined(__PROSPERO__)
+#if defined(_WIN32)
 #include <windows.h>
 #else
 #include <mutex>
@@ -27,6 +27,8 @@
 
 #include <rex/filesystem.h>
 #include <rex/logging.h>
+#include <rex/memory/utils.h>
+#include <rex/system/kernel_state.h>
 
 namespace ng2 {
 
@@ -54,6 +56,10 @@ constexpr double kPressHold = 0.08;
 
 constexpr uint16_t kButtonA = 0x1000;
 constexpr uint16_t kButtonStart = 0x0010;
+constexpr uint16_t kButtonX = 0x4000;
+std::atomic<bool> g_skip_with_x{true};
+std::atomic<rex::input::InputSystem*> g_skip_input{nullptr};
+std::atomic<double> g_skip_press_until{-1.0};
 
 std::atomic<bool> g_enabled{false};
 std::atomic<double> g_armed_until{-1.0};
@@ -176,7 +182,7 @@ uint16_t ScriptButtons(double now) {
 // version present differs across Windows installs and a missing DLL should cost
 // the feature, not the process.
 bool RealPadActive() {
-#if defined(__PROSPERO__)
+#if !defined(_WIN32)
   // [ps5 port] The DualSense through scePad, the same way: the synthetic pad
   // is not an scePad device, so this sees only the player's hands. Any button
   // or the left stick past half counts as touching it.
@@ -313,7 +319,7 @@ bool ParsePadLine(const std::string& raw, PadCmd& out, bool& clear) {
 }
 
 void PollPadFile() {
-#if defined(__PROSPERO__)
+#if !defined(_WIN32)
   return;  // [ps5 port] the live pad file is a PC test tool (AI Vision's padscript)
 #endif
   const double now = Now();
@@ -394,7 +400,7 @@ void ClearPadFileQueue() {
 }
 
 void WritePadAcceptsOnce() {
-#if defined(__PROSPERO__)
+#if !defined(_WIN32)
   return;  // [ps5 port] the live pad file is a PC test tool (AI Vision's padscript)
 #endif
   if (g_padfile_accepts_written)
@@ -404,7 +410,7 @@ void WritePadAcceptsOnce() {
   const auto path = PadDir() / "pad_script.accepts";
   std::ofstream f(path, std::ios::trunc);
   if (f) {
-#if defined(__PROSPERO__)
+#if !defined(_WIN32)
     f << "ng2recomp pad script v1 pid=" << getpid() << "\n";  // [ps5 port]
 #else
     f << "ng2recomp pad script v1 pid=" << GetCurrentProcessId() << "\n";
@@ -466,6 +472,7 @@ class AutoSkipDriver final : public rex::input::InputDriver {
       const double phase = std::fmod(Now(), kPressPeriod);
       if (phase < kPressHold) buttons |= kButtonA | kButtonStart;
     }
+    if (Now() < g_skip_press_until.load(std::memory_order_acquire)) buttons |= kButtonStart;  // (X: PollCutsceneSkip)
     float lx = 0, ly = 0, rx = 0, ry = 0, lt = 0, rt = 0;
     if (!real)
       PadFileState(buttons, lx, ly, rx, ry, lt, rt);
@@ -519,6 +526,36 @@ class AutoSkipDriver final : public rex::input::InputDriver {
 };
 
 }  // namespace
+
+void SetSkipCutscenesWithX(bool enabled) { g_skip_with_x.store(enabled, std::memory_order_release); }
+void SetSkipInput(rex::input::InputSystem* input) { g_skip_input.store(input, std::memory_order_release); }
+
+void PollCutsceneSkip() {
+  static bool x_was_down = false;
+  auto* input = g_skip_input.load(std::memory_order_acquire);
+  if (!input || !g_skip_with_x.load(std::memory_order_acquire)) {
+    x_was_down = false;
+    return;
+  }
+  auto* memory = REX_KERNEL_MEMORY();
+  if (!memory) return;
+  // (the game's cutscene script: running while this is 1 - sub_836331B0)
+  const int16_t script = rex::memory::load_and_swap<int16_t>(memory->TranslateVirtual<const uint8_t*>(0x84A536ECu));
+  X_INPUT_STATE st = {};
+  const bool x_down = input->GetState(0, &st) == X_ERROR_SUCCESS && (st.gamepad.buttons & kButtonX);
+  const bool pressed = x_down && !x_was_down;
+  x_was_down = x_down;
+  if (!pressed || script != 1) return;
+  // Its byte in the game's skippable table (table + 0x68 + the cutscene's
+  // number, numbers up to 0x17F): 1, so the game lets START skip it.
+  const uint32_t id = rex::memory::load_and_swap<uint32_t>(memory->TranslateVirtual<const uint8_t*>(0x84C250C4u));
+  const uint32_t table = rex::memory::load_and_swap<uint32_t>(memory->TranslateVirtual<const uint8_t*>(0x84C3B9E4u));
+  if (id <= 0x17F && table >= 0x10000u) {
+    if (auto* flag = memory->TranslateVirtual<uint8_t*>(table + id + 0x68)) *flag = 1;
+  }
+  g_skip_press_until.store(Now() + 0.2, std::memory_order_release);
+  REXLOG_INFO("Cutscene {}: skipped with X", id);
+}
 
 void SetAutoSkipEnabled(bool enabled) {
   g_enabled.store(enabled, std::memory_order_release);

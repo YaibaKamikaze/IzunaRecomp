@@ -1,6 +1,6 @@
 #include "ng2_hwdetect.h"
 
-#if !defined(__PROSPERO__)
+#if defined(_WIN32)
 #include <windows.h>
 
 #include <dxgi1_4.h>
@@ -15,7 +15,7 @@
 namespace ng2 {
 namespace {
 
-#if !defined(__PROSPERO__)
+#if defined(_WIN32)
 std::string Utf8(const wchar_t* w) {
   if (!w)
     return {};
@@ -31,16 +31,18 @@ std::string Utf8(const wchar_t* w) {
 }  // namespace
 
 
-#if defined(__PROSPERO__)
+#if !defined(_WIN32)
 // [ps5 port] There is one machine to detect. The PS5's 16 GB is shared by the
 // CPU and the GPU, so there is no "dedicated" figure to size from: the
 // settings are chosen in RecommendSettings from what the console port
 // measured instead.
 GpuInfo DetectGpu() {
   GpuInfo info;
+#if defined(__PROSPERO__)
   info.valid = true;
   info.name = "PlayStation 5 GPU (AMD RDNA 2)";
-  return info;
+#endif
+  return info;  // ([IzunaRecomp] Linux: the renderer's log names the Vulkan device)
 }
 #else
 GpuInfo DetectGpu() {

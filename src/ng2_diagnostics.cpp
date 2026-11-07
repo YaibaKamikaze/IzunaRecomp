@@ -1,6 +1,6 @@
 #include "ng2_diagnostics.h"
 
-#if !defined(__PROSPERO__)
+#if defined(_WIN32)
 #include <windows.h>
 #include <shellapi.h>
 #endif
@@ -34,7 +34,7 @@ constexpr size_t kMaxLogLines = 4000;
 std::string TimeStamp(const char* format) {
   const auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
   std::tm tm{};
-#if defined(__PROSPERO__)
+#if !defined(_WIN32)
   localtime_r(&now, &tm);
 #else
   localtime_s(&tm, &now);
@@ -107,12 +107,40 @@ void AppendFile(std::ostream& out, const fs::path& path, const char* title,
     out << l << "\n";
 }
 
-#if defined(__PROSPERO__)
+#if !defined(_WIN32)
 // [ps5 port] One machine: say which, and leave the firmware to the log, where
 // the runtime records what it found.
+#if defined(__PROSPERO__)
 std::string OsVersion() { return "PlayStation 5 (jailbroken, homebrew app)"; }
 std::string CpuName() { return "AMD Zen 2, 8 cores / 16 threads, 3.5 GHz"; }
 double GigabytesOfRam() { return 16.0; }
+#else
+// [IzunaRecomp] Linux: what the system says about itself.
+std::string FirstLineValue(const char* file, const char* key) {
+  std::ifstream in(file);
+  std::string line;
+  const std::string k(key);
+  while (std::getline(in, line)) {
+    if (line.compare(0, k.size(), k) != 0) continue;
+    std::string v = line.substr(k.size());
+    while (!v.empty() && (v.front() == ' ' || v.front() == '\t' || v.front() == ':' || v.front() == '=' ||
+                          v.front() == '"'))
+      v.erase(v.begin());
+    while (!v.empty() && v.back() == '"') v.pop_back();
+    return v;
+  }
+  return {};
+}
+std::string OsVersion() {
+  const std::string name = FirstLineValue("/etc/os-release", "PRETTY_NAME");
+  return name.empty() ? std::string("Linux") : name;
+}
+std::string CpuName() { return FirstLineValue("/proc/cpuinfo", "model name"); }
+double GigabytesOfRam() {
+  const long pages = sysconf(_SC_PHYS_PAGES), size = sysconf(_SC_PAGE_SIZE);
+  return pages > 0 && size > 0 ? double(pages) * double(size) / (1024.0 * 1024.0 * 1024.0) : 0.0;
+}
+#endif
 #else
 std::string OsVersion() {
   // GetVersionEx lies without a manifest; the registry keeps the real thing.
@@ -178,7 +206,7 @@ double GigabytesOfRam() {
 
 }  // namespace
 
-#if defined(__PROSPERO__)
+#if !defined(_WIN32)
 // [ps5 port] No clipboard and no file browser on the console: the file is
 // written to logs/, the folder players already send over FTP.
 bool CopyToClipboard(const std::string&) { return false; }
@@ -215,7 +243,7 @@ void RevealInExplorer(const fs::path& file) {
 
 DiagnosticsResult WriteDiagnostics(const fs::path& settings_file, const fs::path& log_dir) {
   DiagnosticsResult result;
-#if defined(__PROSPERO__)
+#if !defined(_WIN32)
   const fs::path out_dir = log_dir.empty() ? rex::filesystem::GetExecutableFolder() / "logs" : log_dir;
 #else
   const fs::path out_dir = rex::filesystem::GetExecutableFolder() / "diagnostics";
@@ -241,6 +269,9 @@ DiagnosticsResult WriteDiagnostics(const fs::path& settings_file, const fs::path
 #if defined(__PROSPERO__)
   out << "PS5 version:  " << NG2_PS5_VERSION << "\n";
   out << "Executable:   " << (rex::filesystem::GetExecutableFolder() / "eboot.bin").string() << "\n";
+#elif !defined(_WIN32)
+  out << "IzunaRecomp:  " << IZUNA_VERSION << " (Linux)\n";
+  out << "Executable:   " << rex::filesystem::GetExecutablePath().string() << "\n";
 #else
   out << "Executable:   " << (rex::filesystem::GetExecutableFolder() / "ng2.exe").string() << "\n";
 #endif
@@ -256,7 +287,7 @@ DiagnosticsResult WriteDiagnostics(const fs::path& settings_file, const fs::path
     char vram[64];
     std::snprintf(vram, sizeof(vram), "%.1f GB",
                   double(gpu.dedicated_bytes) / (1024.0 * 1024.0 * 1024.0));
-#if defined(__PROSPERO__)
+#if !defined(_WIN32)
     (void)vram;
     out << "GPU:  " << gpu.name << " (16 GB memory shared with the CPU)\n";
 #else

@@ -1,4 +1,5 @@
 #include "ng2_menu.h"
+#include "ng2_autoskip.h"
 
 #include <algorithm>
 #include <filesystem>
@@ -157,6 +158,12 @@ void ApplyLiveSettings(const Ng2Settings& s, rex::ui::Window* window) {
   // FXAA is the native present's post-process (read at every present), so it
   // changes with the next frame: the antialiasing row is not restart-bound.
   SetCvar("native_antialias", s.antialias);
+  ng2::SetSkipCutscenesWithX(s.skip_cutscenes_x);  // [IzunaRecomp] test43
+  // [IzunaRecomp] test43: the A/V sync delay, live (the audio driver reads it every callback)
+  SetCvar("audio_resync_target_frames", std::to_string(6 + (std::clamp(s.audio_delay_ms, 0, 120) * 3 + 8) / 16));
+#if !defined(__PROSPERO__)
+  SetCvar("izuna_fullscreen_refresh_switch", s.pc_refresh_switch ? "true" : "false");  // [IzunaRecomp] (read every 2 s)
+#endif
 #if defined(__PROSPERO__)  // (the PS5's VideoOut flips: no such setting on a PC)
   SetCvar("native_vblank_wait_flips", s.ps5_low_latency ? "true" : "false");  // [IzunaRecomp] (read every vblank)
 #endif

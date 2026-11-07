@@ -542,7 +542,7 @@ class Ng2App : public rex::ReXApp {
   // no shaders of its own. (The PS5 and the Linux host test, with no DXC,
   // draw with the table built in at build time.)
   void OnBeforeModuleResume(std::function<void()> start) override {
-#if defined(_WIN32)
+#if defined(IZUNA_SHADERS_FROM_GAME)
     auto* state = REX_KERNEL_STATE();
     auto module = state ? state->GetExecutableModule() : rex::system::object_ref<rex::system::UserModule>();
     auto* xex = module ? module->xex_module() : nullptr;
@@ -553,8 +553,19 @@ class Ng2App : public rex::ReXApp {
     const uint32_t base = xex->base_address(), size = xex->image_size();
     const auto exe_dir = rex::filesystem::GetExecutableFolder();
     std::filesystem::path cache = exe_dir / "cache" / "shaders";
+#if defined(_WIN32)
     if (const wchar_t* local = _wgetenv(L"LOCALAPPDATA"); local && *local)
       cache = std::filesystem::path(local) / L"IzunaRecomp" / L"shaders";
+    const std::filesystem::path dxc = exe_dir / "dxcompiler.dll";
+#else
+    // [IzunaRecomp] Linux: ~/.cache/IzunaRecomp/shaders; DXC beside the real
+    // binary (the AppImage's usr/bin - the app folder is elsewhere).
+    if (const char* xdg = std::getenv("XDG_CACHE_HOME"); xdg && *xdg)
+      cache = std::filesystem::path(xdg) / "IzunaRecomp" / "shaders";
+    else if (const char* home = std::getenv("HOME"); home && *home)
+      cache = std::filesystem::path(home) / ".cache" / "IzunaRecomp" / "shaders";
+    const std::filesystem::path dxc = rex::filesystem::GetExecutablePath().parent_path() / "libdxcompiler.so";
+#endif
     REXLOG_INFO("[izuna] shaders: preparing from the game image ({:08X}, {} MB)", base, size >> 20);
     // The panel in the window (empty until the first shader is built: a start
     // that loads the saved build never shows it).
@@ -562,7 +573,7 @@ class Ng2App : public rex::ReXApp {
     shader_progress_.total.store(0);
     if (!shader_overlay_) shader_overlay_ = std::make_unique<izuna::shaders::ProgressOverlay>(imgui_drawer(), &shader_progress_);
     StartUiPump();  // (stopped when the hub's START closed it: the window repaints for the panel)
-    std::thread([this, start = std::move(start), base, size, exe_dir, cache]() mutable {
+    std::thread([this, start = std::move(start), base, size, exe_dir, cache, dxc]() mutable {
       // The image copied out of guest memory, page by page where readable (a
       // page the loader left without access reads as zeros, never faults).
       const std::vector<uint8_t> image =
@@ -570,7 +581,7 @@ class Ng2App : public rex::ReXApp {
       static izuna::shaders::Table table;
       auto last = std::make_shared<std::atomic<int>>(-1);
       const auto report = izuna::shaders::Prepare(
-          image.data(), image.size(), cache, exe_dir / "dxcompiler.dll", table,
+          image.data(), image.size(), cache, dxc, table,
           [this, last](size_t done, size_t total) {
             shader_progress_.total.store(int(total), std::memory_order_relaxed);
             shader_progress_.done.store(int(done), std::memory_order_relaxed);
@@ -587,7 +598,12 @@ class Ng2App : public rex::ReXApp {
         // cannot be drawn, so the player is told why rather than shown black.
         izuna::pc::ShowError(fmt::format(
             "The game's shaders could not be prepared from your copy of Ninja Gaiden II ({}).\n\n"
+#if defined(_WIN32)
             "Check that dxcompiler.dll is beside ng2.exe, and that the game folder is a complete copy of the disc.",
+#else
+            "Check that libdxcompiler.so is beside the ng2 binary, and that the game folder is a complete copy of "
+            "the disc.",
+#endif
             report.error));
         ng2::ExitNow(1);
       }
@@ -595,11 +611,26 @@ class Ng2App : public rex::ReXApp {
       REXLOG_INFO("[izuna] shaders: {} {} from the game in {:.1f} s ({} found); cache {}", report.built,
                   report.from_cache ? "loaded (built at an earlier start)" : "built", report.seconds, report.found,
                   cache.string());
+      // [IzunaRecomp] test42: the panel stays (and the window keeps
+      // repainting) while the renderer holds the game for its pipelines
+      // (izuna_progress.h); then it goes. A renderer that never starts (no
+      // drawing on this GPU) is not waited for past 20 s.
       app_context().CallInUIThreadDeferred([this, start = std::move(start)]() mutable {
-        if (auto* w = window()) w->SetTitle(std::string("Ninja Gaiden II  -  IzunaRecomp ") + IZUNA_VERSION);
-        StopUiPump();
-        shader_overlay_.reset();
         start();
+        std::thread([this] {
+          const auto t0 = std::chrono::steady_clock::now();
+          auto& pipes = izuna::progress::g_pipelines;
+          while (!pipes.finished.load(std::memory_order_acquire) &&
+                 (pipes.active.load(std::memory_order_acquire) ||
+                  std::chrono::steady_clock::now() - t0 < std::chrono::seconds(20))) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+          }
+          app_context().CallInUIThreadDeferred([this] {
+            if (auto* w = window()) w->SetTitle(std::string("Ninja Gaiden II  -  IzunaRecomp ") + IZUNA_VERSION);
+            StopUiPump();
+            shader_overlay_.reset();
+          });
+        }).detach();
       });
     }).detach();
 #else
@@ -1152,6 +1183,8 @@ class Ng2App : public rex::ReXApp {
     // must not bring it back. The driver stays for NG2_PAD_SCRIPT testing.
     ng2::SetAutoSkipEnabled(false);
     input->AddDriver(ng2::MakeAutoSkipDriver());
+    ng2::SetSkipInput(input);  // [IzunaRecomp] test43: X skips cutscenes (its merged pads)
+    ng2::SetSkipCutscenesWithX(settings_.skip_cutscenes_x);
     REXLOG_INFO("Input: every controller drives guest user 0");
   }
 
