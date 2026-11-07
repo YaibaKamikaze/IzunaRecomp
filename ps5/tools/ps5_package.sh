@@ -127,6 +127,9 @@ EOF
 # PlayStation button pictures, and the README in each folder the player fills.
 cp -r "$ps5dir/package/sce_sys/." "$app/sce_sys/"
 cp -r "$ps5dir/package/hub" "$app/hub"
+# [IzunaRecomp] Never the game's music: a theme.wav a player put in the tree's
+# hub/music is theirs (the soundtrack), not the package's.
+find "$app/hub" -iname '*.wav' -delete
 for d in "Game Data" "DLC" "Saves Import" "Texture Packs"; do
     mkdir -p "$app/$d"
     cp "$ps5dir/package/$d/README.txt" "$app/$d/README.txt"
