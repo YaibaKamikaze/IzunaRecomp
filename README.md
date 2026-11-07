@@ -1,4 +1,11 @@
 # IzunaRecomp — The Izuna Project
+
+> [!WARNING]
+> **Played [NG2Recomp](https://github.com/gamboozino/ng2recomp) with the same game files?** Your game folder may now have a
+> file called **`default.xexp`** next to `default.xex`. IzunaRecomp applies a `default.xexp` it finds as a title update,
+> and that may stop the game from launching. Move `default.xexp` out of the game folder (on PS5:
+> `PPSA94203/Game Data/`) before starting IzunaRecomp; put it back if NG2Recomp needs it.
+
 ## v0.2.1 adds a Linux AppImage (Steam Deck included), a PS5 build, smoother starts and accuracy fixes.
 ## This got released with the purpose of people playing around with it and seeing what can be improved, so if you have an issue with it please talk about it and send your logs, this will help the project. I am but one person using the water eating slop machine to develop this and don't have all the hardware possible to test it, I've only used a 4060 and an AMD CPU to try it so far, so reports from AMD and Intel Arc GPUs are especially welcome.
 
