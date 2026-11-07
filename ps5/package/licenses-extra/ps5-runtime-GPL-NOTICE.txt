@@ -20,8 +20,8 @@ at commit d54d9adb084bc038023ec4d8bbd8a4ba23f5880d.
 
 Because eboot.bin contains GPL-3.0-or-later code, this PS5 release is
 distributed under the terms of the GNU GPL v3. Its source is the IzunaRecomp
-repository (https://github.com/YaibaKamikaze/IzunaRecomp) at this release's
-tag, plus the pinned upstream versions listed in its THIRD_PARTY_NOTICES.md
+repository (https://github.com/YaibaKamikaze/IzunaRecomp) at the tag
+v0.2.1-ps5 (for this release; later PS5 releases name their own), plus the pinned upstream versions listed in its THIRD_PARTY_NOTICES.md
 and the repository above. The game's own code, which eboot.bin contains in
 translated form, is not part of that source and is not licensed by anyone
 here: it is regenerated from each player's own copy of the game.
