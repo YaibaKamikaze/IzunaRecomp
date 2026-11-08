@@ -175,7 +175,37 @@ VkPipeline BuildPipeline(const PipelineKey& key, VkShaderModule vs_module, VkSha
   }
   if (pr != VK_SUCCESS) {
     pipeline = VK_NULL_HANDLE;
-    REXLOG_WARN("[native] pipeline failed: VS {:016X} PS {:016X}", key.vs, key.ps);
+    REXLOG_WARN("[native] pipeline failed ({}): VS {:016X}{} PS {:016X}{}{}", int(pr), key.vs, vs_module ? "" : " (no module)",
+                key.ps, ps_module || !key.ps ? "" : " (no module)", (key.topology & kRectList) ? ", rect list" : "");
+    // [IzunaRecomp] The first failure, retried in parts, to see which one the
+    // driver refuses (Adreno refused every pipeline, test51): without depth
+    // clamp, without the rect-list geometry shader, the vertex shader alone.
+    static std::atomic<bool> bisected{false};
+    if (!bisected.exchange(true)) {
+      auto attempt = [&](const char* what) {
+        VkPipeline p = VK_NULL_HANDLE;
+        const VkResult r = g.vk.CreateGraphicsPipelines(g.ctx.device, VK_NULL_HANDLE, 1, &pci, nullptr, &p);
+        REXLOG_WARN("[native] pipeline failure check - {}: {}", what, r == VK_SUCCESS ? "WORKS" : fmt::format("fails ({})", int(r)));
+        (void)p;  // (left alive: a few, once)
+      };
+      REXLOG_WARN("[native] pipeline failure check: {} stage(s), {} colour target(s), depth format {}, depth clamp {}, "
+                  "colour formats {} {} {} {}", stage_count, color_count, int(key.depth_format),
+                  int(rs.depthClampEnable), int(formats[0]), int(formats[1]), int(formats[2]), int(formats[3]));
+      attempt("as it was, without the pipeline cache");
+      rs.depthClampEnable = VK_FALSE;
+      attempt("without depth clamp");
+      if (key.topology & kRectList) {
+        pci.stageCount = stage_count - 1;
+        ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+        attempt("without the rect-list geometry shader");
+      }
+      pci.stageCount = 1;
+      attempt("the vertex shader alone");
+      ri.colorAttachmentCount = 0;
+      cb.attachmentCount = 0;
+      ri.depthAttachmentFormat = ri.stencilAttachmentFormat = VK_FORMAT_UNDEFINED;
+      attempt("the vertex shader alone, no targets");
+    }
   }
   return pipeline;
 }

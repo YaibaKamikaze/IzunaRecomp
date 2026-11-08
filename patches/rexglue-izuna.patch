@@ -689,6 +689,29 @@ index be0497bf..fb1b3de2 100644
  /**
   * Flush all loggers without tearing down the logging system.
   *
+diff --git a/include/rex/memory/utils.h b/include/rex/memory/utils.h
+index 8ccb52c9..9030b162 100644
+--- a/include/rex/memory/utils.h
++++ b/include/rex/memory/utils.h
+@@ -148,6 +148,18 @@ constexpr FileMappingHandle kFileMappingHandleInvalid = -1;
+ FileMappingHandle CreateFileMappingHandle(const std::filesystem::path& path, size_t length,
+                                           PageAccess access, bool commit);
+ void CloseFileMappingHandle(FileMappingHandle handle, const std::filesystem::path& path);
++
++// [IzunaRecomp] The guest's physical memory from an outside object instead of
++// the guest's mapping file: a buffer the GPU shares with the CPU, for GPU
++// drivers that cannot import the guest's own memory (no
++// VK_EXT_external_memory_host: Android's, SteamOS's RADV). Memory::Initialize
++// asks the provider once, before it maps the guest's views; it returns the
++// object's file descriptor and its size (at least 512 MB + 4 KB: the
++// 0xE0000000 view starts 4 KB in), or kFileMappingHandleInvalid to keep the
++// mapping file. POSIX only (src/native/native_shared_memory.cpp provides it).
++using ExternalPhysicalProvider = std::function<FileMappingHandle(size_t* size)>;
++void SetExternalPhysicalProvider(ExternalPhysicalProvider provider);
++FileMappingHandle CallExternalPhysicalProvider(size_t* size);
+ void* MapFileView(FileMappingHandle handle, void* base_address, size_t length, PageAccess access,
+                   size_t file_offset);
+ bool UnmapFileView(FileMappingHandle handle, void* base_address, size_t length);
 diff --git a/include/rex/ppc/context.h b/include/rex/ppc/context.h
 index 0ede5426..19522fd6 100644
 --- a/include/rex/ppc/context.h
@@ -1024,7 +1047,7 @@ index ef6ae4d5..da235e92 100644
   protected:
    enum class PaintResult {
 diff --git a/include/rex/ui/vulkan/device.h b/include/rex/ui/vulkan/device.h
-index a1cc533c..13b6b2d5 100644
+index a1cc533c..41f7253b 100644
 --- a/include/rex/ui/vulkan/device.h
 +++ b/include/rex/ui/vulkan/device.h
 @@ -97,7 +97,11 @@ class VulkanDevice {
@@ -1039,18 +1062,20 @@ index a1cc533c..13b6b2d5 100644
      bool tessellationShader = false;
      bool sampleRateShading = false;
      bool depthClamp = false;
-@@ -110,6 +114,10 @@ class VulkanDevice {
+@@ -110,6 +114,12 @@ class VulkanDevice {
      bool shaderCullDistance = false;
      bool sparseBinding = false;
      bool sparseResidencyBuffer = false;
 +    bool shaderInt64 = false;  // [native renderer track]
++    bool shaderStorageImageReadWithoutFormat = false;   // [IzunaRecomp]
++    bool shaderStorageImageWriteWithoutFormat = false;  // [IzunaRecomp]
 +    // [IzunaRecomp] VK_KHR_present_id + VK_KHR_present_wait: the presenter
 +    // waits for its pictures to reach the screen (vulkan_presenter.cpp).
 +    bool presentWait = false;
  
      // VK_KHR_sampler_mirror_clamp_to_edge (#15, promoted to 1.2)
  
-@@ -229,6 +237,8 @@ class VulkanDevice {
+@@ -229,6 +239,8 @@ class VulkanDevice {
    };
  
    const Functions& functions() const { return functions_; }
@@ -1059,7 +1084,7 @@ index a1cc533c..13b6b2d5 100644
  
    template <typename Object>
    void SetObjectName(const VkObjectType object_type, const Object object_handle,
-@@ -282,6 +292,14 @@ class VulkanDevice {
+@@ -282,6 +294,14 @@ class VulkanDevice {
                                    const uint32_t queue_index) const {
      return queue_families()[queue_family_index].queues[queue_index]->Acquire();
    }
@@ -1074,7 +1099,7 @@ index a1cc533c..13b6b2d5 100644
  
    struct MemoryTypes {
      uint32_t device_local = 0b0;
-@@ -304,12 +322,14 @@ class VulkanDevice {
+@@ -304,12 +324,14 @@ class VulkanDevice {
    VkDevice device_ = nullptr;
  
    Functions functions_;
@@ -2620,7 +2645,7 @@ index 1645848c..34e03978 100644
  
  LogCategoryId RegisterLogCategory(const char* name) {
 diff --git a/src/core/memory_posix.cpp b/src/core/memory_posix.cpp
-index dc5a777e..5689d32c 100644
+index dc5a777e..9ad8ac97 100644
 --- a/src/core/memory_posix.cpp
 +++ b/src/core/memory_posix.cpp
 @@ -268,6 +268,11 @@ void* AllocFixed(void* base_address, size_t length, AllocationType allocation_ty
@@ -2661,6 +2686,25 @@ index dc5a777e..5689d32c 100644
  
  #if REX_PLATFORM_MAC
    // mprotect doesn't report the previous protection. Query the Mach region
+@@ -489,6 +506,18 @@ bool QueryProtect(void* base_address, size_t& length, PageAccess& access_out) {
+ #endif
+ }
+ 
++// [IzunaRecomp] (utils.h)
++namespace {
++ExternalPhysicalProvider g_external_physical_provider;
++}
++void SetExternalPhysicalProvider(ExternalPhysicalProvider provider) {
++  g_external_physical_provider = std::move(provider);
++}
++FileMappingHandle CallExternalPhysicalProvider(size_t* size) {
++  *size = 0;
++  return g_external_physical_provider ? g_external_physical_provider(size) : kFileMappingHandleInvalid;
++}
++
+ FileMappingHandle CreateFileMappingHandle(const std::filesystem::path& path, size_t length,
+                                           PageAccess access, bool commit) {
+ #if REX_PLATFORM_ANDROID
 diff --git a/src/core/ps5_diag.cpp b/src/core/ps5_diag.cpp
 index 7d718ffa..96d09334 100644
 --- a/src/core/ps5_diag.cpp
@@ -6183,7 +6227,7 @@ index 4179e8b2..77712a5e 100644
  
  X_STATUS XFile::Rename(const std::filesystem::path& file_path) {
 diff --git a/src/system/xmemory.cpp b/src/system/xmemory.cpp
-index 7a3cd053..9ded27f3 100644
+index 7a3cd053..4a648e68 100644
 --- a/src/system/xmemory.cpp
 +++ b/src/system/xmemory.cpp
 @@ -16,6 +16,8 @@
@@ -6205,7 +6249,87 @@ index 7a3cd053..9ded27f3 100644
  
  namespace rex::memory {
  
-@@ -726,10 +731,23 @@ bool Memory::AccessViolationCallback(std::unique_lock<std::recursive_mutex> glob
+@@ -137,6 +142,9 @@ Memory::~Memory() {
+   physical_membase_ = nullptr;
+ }
+ 
++// [IzunaRecomp] The shared physical memory object (utils.h), if any.
++static rex::memory::FileMappingHandle g_external_physical = rex::memory::kFileMappingHandleInvalid;
++
+ bool Memory::Initialize() {
+   file_name_ = fmt::format("xenia_memory_{}", chrono::Clock::QueryHostTickCount());
+ 
+@@ -160,6 +168,19 @@ bool Memory::Initialize() {
+ #endif
+   }
+ 
++#if !REX_PLATFORM_WIN32 && !REX_PLATFORM_MAC && !REX_PLATFORM_PS5
++  // [IzunaRecomp] The physical memory from a buffer the GPU shares, if the app
++  // provides one (utils.h).
++  {
++    size_t size = 0;
++    g_external_physical = rex::memory::CallExternalPhysicalProvider(&size);
++    if (g_external_physical != rex::memory::kFileMappingHandleInvalid && size < 0x20001000ull) {
++      REXSYS_ERROR("Shared physical memory too small ({:#x} bytes): using the mapping file", size);
++      g_external_physical = rex::memory::kFileMappingHandleInvalid;
++    }
++  }
++#endif
++
+ #if REX_PLATFORM_MAC || REX_PLATFORM_PS5  // [ps5 port] reserve, then MAP_FIXED views (tested on a PS5)
+   // On macOS, reserve a contiguous host range first, then carve guest views
+   // into it with MAP_SHARED|MAP_FIXED so all views share the same backing fd.
+@@ -192,6 +213,28 @@ bool Memory::Initialize() {
+   REXSYS_INFO("Guest memory arena mapped: virtual base 0x{:016X}, physical base 0x{:016X}",
+               reinterpret_cast<uintptr_t>(virtual_membase_),
+               reinterpret_cast<uintptr_t>(physical_membase_));
++  if (g_external_physical != rex::memory::kFileMappingHandleInvalid) {
++    // [IzunaRecomp] The mirrors must show one memory, as on the PS5: write
++    // through one view, read through another.
++    struct Pair {
++      int a, b;
++      const char* name;
++    } pairs[] = {{8, 5, "phys raw->A0"}, {8, 6, "phys raw->C0"}, {5, 6, "A0->C0"}, {2, 8, "7F->phys raw"},
++                 {8, 7, "phys raw->E0"}};
++    bool all = true;
++    for (const Pair& p : pairs) {
++      volatile uint32_t* wa = reinterpret_cast<volatile uint32_t*>(views_.all_views[p.a] + 0x2040);
++      volatile uint32_t* rb = reinterpret_cast<volatile uint32_t*>(views_.all_views[p.b] + 0x2040 -
++                                                                   (p.b == 7 ? 0x1000 : 0) + (p.a == 7 ? 0x1000 : 0));
++      const uint32_t saved = *wa;
++      *wa = 0x5A17C0DE;
++      const bool same = *rb == 0x5A17C0DE;
++      *wa = saved;
++      all &= same;
++      if (!same) REXSYS_ERROR("Shared physical memory: mirror {} BROKEN", p.name);
++    }
++    REXSYS_INFO("Guest physical memory in a buffer the GPU shares ({})", all ? "mirrors ok" : "MIRRORS BROKEN");
++  }
+ 
+   // Prepare virtual heaps.
+   heaps_.v00000000.Initialize(this, virtual_membase_, memory::HeapType::kGuestVirtual, 0x00000000,
+@@ -481,10 +524,18 @@ int Memory::MapViews(uint8_t* mapping_base) {
+   // side if system allocation granularity is bigger than 4 KB.
+   uint64_t granularity_mask = ~uint64_t(system_allocation_granularity_ - 1);
+   for (size_t n = 0; n < rex::countof(map_info); n++) {
++    // [IzunaRecomp] The physical memory's views (file offset 0x100000000 on)
++    // from the shared buffer, if there is one.
++    rex::memory::FileMappingHandle handle = mapping_;
++    uint64_t offset = map_info[n].target_address & granularity_mask;
++    if (g_external_physical != rex::memory::kFileMappingHandleInvalid && offset >= 0x100000000ull) {
++      handle = g_external_physical;
++      offset -= 0x100000000ull;
++    }
+     views_.all_views[n] = reinterpret_cast<uint8_t*>(rex::memory::MapFileView(
+-        mapping_, mapping_base + map_info[n].virtual_address_start,
++        handle, mapping_base + map_info[n].virtual_address_start,
+         map_info[n].virtual_address_end - map_info[n].virtual_address_start + 1,
+-        rex::memory::PageAccess::kReadWrite, map_info[n].target_address & granularity_mask));
++        rex::memory::PageAccess::kReadWrite, offset));
+     if (!views_.all_views[n]) {
+       // Failed, so bail and try again.
+       UnmapViews();
+@@ -726,10 +777,23 @@ bool Memory::AccessViolationCallback(std::unique_lock<std::recursive_mutex> glob
            reinterpret_cast<uintptr_t>(host_address) & ~(uintptr_t(host_page_size - 1));
        if (rex::memory::Protect(reinterpret_cast<void*>(page_base), host_page_size,
                                 rex::memory::PageAccess::kReadWrite, nullptr)) {
@@ -6233,7 +6357,7 @@ index 7a3cd053..9ded27f3 100644
          return true;
        }
      }
-@@ -1046,7 +1064,8 @@ bool BaseHeap::SyncHostPageAccess(uint32_t start_page_number, uint32_t end_page_
+@@ -1046,7 +1110,8 @@ bool BaseHeap::SyncHostPageAccess(uint32_t start_page_number, uint32_t end_page_
    // by its committed guest pages. This can't enforce stricter access for one
    // guest page while a neighbor needs broader access, but it keeps neighboring
    // committed pages usable and allows guest protection metadata to stay exact.
@@ -6243,7 +6367,7 @@ index 7a3cd053..9ded27f3 100644
      const uint64_t host_page_start = uint64_t(host_page_number) * host_page_size;
      const uint64_t host_page_end = host_page_start + host_page_size;
      const uint64_t heap_host_start = host_address_offset_;
-@@ -1086,6 +1105,17 @@ bool BaseHeap::SyncHostPageAccess(uint32_t start_page_number, uint32_t end_page_
+@@ -1086,6 +1151,17 @@ bool BaseHeap::SyncHostPageAccess(uint32_t start_page_number, uint32_t end_page_
      if (!has_committed && heap_type_ == memory::HeapType::kGuestPhysical &&
          !REXCVAR_GET(protect_on_release)) {
        access = rex::memory::PageAccess::kReadWrite;
@@ -6261,7 +6385,7 @@ index 7a3cd053..9ded27f3 100644
      } else if (!has_read) {
        access = rex::memory::PageAccess::kNoAccess;
      } else {
-@@ -1119,11 +1149,12 @@ bool BaseHeap::SyncHostPageAccess(uint32_t start_page_number, uint32_t end_page_
+@@ -1119,11 +1195,12 @@ bool BaseHeap::SyncHostPageAccess(uint32_t start_page_number, uint32_t end_page_
    // would cost thousands of syscalls where one suffices.
    uint8_t* const heap_host_base = membase_ + heap_base_;
    uint32_t run_first_page = host_page_first;
@@ -6276,7 +6400,7 @@ index 7a3cd053..9ded27f3 100644
        REXSYS_ERROR("BaseHeap::SyncHostPageAccess failed for heap {:08X} host pages {}-{}",
                     heap_base_, run_first_page, run_last_page);
        return false;
-@@ -1132,7 +1163,7 @@ bool BaseHeap::SyncHostPageAccess(uint32_t start_page_number, uint32_t end_page_
+@@ -1132,7 +1209,7 @@ bool BaseHeap::SyncHostPageAccess(uint32_t start_page_number, uint32_t end_page_
    };
  
    for (uint32_t host_page = host_page_first + 1; host_page <= host_page_last; ++host_page) {
@@ -6285,7 +6409,7 @@ index 7a3cd053..9ded27f3 100644
      if (access == run_access) {
        continue;
      }
-@@ -1401,8 +1432,29 @@ bool BaseHeap::AllocSystemHeap(uint32_t size, uint32_t alignment, uint32_t alloc
+@@ -1401,8 +1478,29 @@ bool BaseHeap::AllocSystemHeap(uint32_t size, uint32_t alignment, uint32_t alloc
                      out_address);
  }
  
@@ -6315,7 +6439,7 @@ index 7a3cd053..9ded27f3 100644
    alignment = rex::round_up(alignment, page_size_);
    if (base_address % alignment != 0) {
      if (base_address % page_size_ != 0) {
-@@ -1683,10 +1735,12 @@ bool BaseHeap::AllocRange(uint32_t low_address, uint32_t high_address, uint32_t
+@@ -1683,10 +1781,12 @@ bool BaseHeap::AllocRange(uint32_t low_address, uint32_t high_address, uint32_t
    }
  
    *out_address = heap_base_ + (start_page_number << page_size_shift_);
@@ -6328,7 +6452,7 @@ index 7a3cd053..9ded27f3 100644
    uint32_t page_count = get_page_count(size, page_size_, page_size_shift_);
    uint32_t start_page_number = (address - heap_base_) >> page_size_shift_;
    uint32_t end_page_number = start_page_number + page_count - 1;
-@@ -1723,6 +1777,7 @@ bool BaseHeap::Decommit(uint32_t address, uint32_t size) {
+@@ -1723,6 +1823,7 @@ bool BaseHeap::Decommit(uint32_t address, uint32_t size) {
  }
  
  bool BaseHeap::Release(uint32_t base_address, uint32_t* out_region_size) {
@@ -6336,7 +6460,7 @@ index 7a3cd053..9ded27f3 100644
    // Global critical region before heap_mutex_ - see
    // AcquireHostPageReconcileLock for why the order matters.
    auto global_lock = AcquireHostPageReconcileLock();
-@@ -1785,6 +1840,7 @@ bool BaseHeap::Release(uint32_t base_address, uint32_t* out_region_size) {
+@@ -1785,6 +1886,7 @@ bool BaseHeap::Release(uint32_t base_address, uint32_t* out_region_size) {
  }
  
  bool BaseHeap::Protect(uint32_t address, uint32_t size, uint32_t protect, uint32_t* old_protect) {
@@ -6616,7 +6740,7 @@ index 6f1e89ff..4e09d3df 100644
    });
  }
 diff --git a/src/ui/vulkan/vulkan_device.cpp b/src/ui/vulkan/vulkan_device.cpp
-index 2408810b..444200dc 100644
+index 2408810b..1a188b66 100644
 --- a/src/ui/vulkan/vulkan_device.cpp
 +++ b/src/ui/vulkan/vulkan_device.cpp
 @@ -35,6 +35,9 @@ REXCVAR_DEFINE_BOOL(vulkan_require_vertex_pipeline_stores_and_atomics, true, "UI
@@ -6647,17 +6771,24 @@ index 2408810b..444200dc 100644
  
    bool ext_1_2_KHR_sampler_mirror_clamp_to_edge = false;
    bool ext_1_1_KHR_maintenance1 = false;
-@@ -240,6 +254,9 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
+@@ -240,6 +254,16 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
    bool ext_1_3_EXT_shader_demote_to_helper_invocation = false;
    bool ext_1_3_KHR_dynamic_rendering = false;
    bool ext_EXT_non_seamless_cube_map = false;
 +  bool ext_EXT_external_memory_host = false;  // [native renderer track]
 +  bool ext_KHR_pipeline_library = false;               // [native renderer track]
 +  bool ext_EXT_graphics_pipeline_library = false;      // [native renderer track]
++  // [IzunaRecomp] Android: no driver there has VK_EXT_external_memory_host
++  // (Qualcomm's nor Turnip), so the guest's memory has to be shared the other
++  // way - a buffer both the GPU and the CPU map (native_renderer.cpp's probe).
++  bool ext_KHR_external_memory_fd = false;
++  bool ext_EXT_external_memory_dma_buf = false;
++  bool ext_ANDROID_external_memory_android_hardware_buffer = false;
++  bool ext_EXT_queue_family_foreign = false;
    if (with_gpu_emulation) {
      // #15.
      XE_UI_VULKAN_LOCAL_PROMOTED_EXTENSION(KHR_sampler_mirror_clamp_to_edge, 1, 2)
-@@ -269,6 +286,13 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
+@@ -269,6 +293,19 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
        // [svr2011] #162 (needs #169).
        XE_UI_VULKAN_LOCAL_PROMOTED_EXTENSION(EXT_descriptor_indexing, 1, 2)
        XE_UI_VULKAN_LOCAL_PROMOTED_EXTENSION(KHR_maintenance3, 1, 1)
@@ -6668,10 +6799,33 @@ index 2408810b..444200dc 100644
 +      // libraries - a new render state costs a link, not a compile.
 +      XE_UI_VULKAN_LOCAL_EXTENSION(KHR_pipeline_library)
 +      XE_UI_VULKAN_LOCAL_EXTENSION(EXT_graphics_pipeline_library)
++#if defined(__linux__)  // (Android too)
++      XE_UI_VULKAN_LOCAL_EXTENSION(KHR_external_memory_fd)
++      XE_UI_VULKAN_LOCAL_EXTENSION(EXT_external_memory_dma_buf)
++      XE_UI_VULKAN_LOCAL_EXTENSION(ANDROID_external_memory_android_hardware_buffer)
++      XE_UI_VULKAN_LOCAL_EXTENSION(EXT_queue_family_foreign)
++#endif
      }
      if (properties.apiVersion >= VK_MAKE_API_VERSION(0, 1, 1, 0)) {
        // #237.
-@@ -366,6 +390,13 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
+@@ -300,6 +337,16 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
+         return nullptr;
+       }
+       assert_true(supported_extension_count == supported_extensions.size());
++#if defined(__linux__)  // (Android too)
++      {  // [IzunaRecomp] every extension the driver offers, once: what a phone's driver can do
++        std::string all;
++        for (const VkExtensionProperties& e : supported_extensions) {
++          all += ' ';
++          all += e.extensionName;
++        }
++        REXLOG_INFO("Vulkan device '{}' offers {} extensions:{}", properties.deviceName, supported_extensions.size(), all);
++      }
++#endif
+       for (const VkExtensionProperties& supported_extension : supported_extensions) {
+         const auto requested_extension_it =
+             requested_extensions.find(supported_extension.extensionName);
+@@ -366,6 +413,13 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
    VulkanFeatures<VkPhysicalDeviceNonSeamlessCubeMapFeaturesEXT,
                   VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_NON_SEAMLESS_CUBE_MAP_FEATURES_EXT>
        features_EXT_non_seamless_cube_map;
@@ -6685,7 +6839,7 @@ index 2408810b..444200dc 100644
    VulkanFeatures<VkPhysicalDeviceCustomBorderColorFeaturesEXT,
                   VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_FEATURES_EXT>
        features_EXT_custom_border_color;
-@@ -412,6 +443,13 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
+@@ -412,6 +466,13 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
      if (ext_EXT_non_seamless_cube_map) {
        features_EXT_non_seamless_cube_map.Link(supported_features_2, device_create_info);
      }
@@ -6699,7 +6853,7 @@ index 2408810b..444200dc 100644
      if (device->extensions_.ext_EXT_custom_border_color) {
        features_EXT_custom_border_color.Link(supported_features_2, device_create_info);
        properties_EXT_custom_border_color.pNext = properties_2.pNext;
-@@ -524,6 +562,21 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
+@@ -524,6 +585,21 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
  
    device->queue_families_[device->queue_family_graphics_compute_].queues.resize(std::max(
        size_t(1), device->queue_families_[device->queue_family_graphics_compute_].queues.size()));
@@ -6721,7 +6875,7 @@ index 2408810b..444200dc 100644
    if (device->queue_family_sparse_binding_ != UINT32_MAX) {
      device->queue_families_[device->queue_family_sparse_binding_].queues.resize(std::max(
          size_t(1), device->queue_families_[device->queue_family_sparse_binding_].queues.size()));
-@@ -674,6 +727,7 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
+@@ -674,6 +750,7 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
      XE_UI_VULKAN_FEATURE(robustBufferAccess)
      XE_UI_VULKAN_FEATURE(fullDrawIndexUint32)
      XE_UI_VULKAN_FEATURE(independentBlend)
@@ -6729,15 +6883,20 @@ index 2408810b..444200dc 100644
      XE_UI_VULKAN_FEATURE(geometryShader)
      XE_UI_VULKAN_FEATURE(tessellationShader)
      XE_UI_VULKAN_FEATURE(sampleRateShading)
-@@ -687,6 +741,7 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
+@@ -687,6 +764,12 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
      XE_UI_VULKAN_FEATURE(shaderCullDistance)
      XE_UI_VULKAN_FEATURE(sparseBinding)
      XE_UI_VULKAN_FEATURE(sparseResidencyBuffer)
 +    XE_UI_VULKAN_FEATURE(shaderInt64)  // [native renderer track] 64-bit buffer addresses in shaders
++    // [IzunaRecomp] Every translated shader declares StorageImageReadWithoutFormat
++    // (DXC, for the typed storage images of the shader library): a strict driver
++    // needs the feature on (Qualcomm's, test52).
++    XE_UI_VULKAN_FEATURE(shaderStorageImageReadWithoutFormat)
++    XE_UI_VULKAN_FEATURE(shaderStorageImageWriteWithoutFormat)
    }
  
    if (properties.apiVersion >= VK_MAKE_API_VERSION(0, 1, 2, 0)) {
-@@ -710,6 +765,10 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
+@@ -710,6 +793,10 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
          e.descriptorBindingVariableDescriptorCount = VK_TRUE;
          e.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE;
          e.shaderSampledImageArrayNonUniformIndexing = s.shaderSampledImageArrayNonUniformIndexing;
@@ -6748,7 +6907,7 @@ index 2408810b..444200dc 100644
        }
        device->properties_.appRendererFeatures = app_renderer;
        REXLOG_INFO("* app renderer features: {}", app_renderer);
-@@ -801,6 +860,18 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
+@@ -801,6 +888,18 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
      }
    }
  
@@ -6767,7 +6926,7 @@ index 2408810b..444200dc 100644
    if (device->extensions_.ext_EXT_custom_border_color) {
      if (with_gpu_emulation) {
        XE_UI_VULKAN_FEATURE_2(features_EXT_custom_border_color, customBorderColors)
-@@ -887,6 +958,11 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
+@@ -887,6 +986,11 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
  #include <rex/ui/vulkan/functions/device_khr_swapchain.inc>
    }
  #undef XE_UI_VULKAN_FUNCTION_PROMOTED

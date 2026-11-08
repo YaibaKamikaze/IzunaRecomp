@@ -8,6 +8,7 @@
 
 #include <rex/cvar.h>
 
+#include "izuna/izuna_gpu_driver.h"
 #include "ps5/hub/hub_ui.h"
 #include "izuna/izuna_keys.h"
 
@@ -311,11 +312,32 @@ std::vector<Setting> Build() {
                       "lowest latency, tears. Auto is FIFO. From the next start.",
                       &Ng2Settings::pc_present_mode, {"auto", "fifo", "fifo_relaxed", "mailbox", "immediate"},
                       {"Auto", "FIFO (V-Sync)", "FIFO relaxed", "Mailbox", "Immediate (tearing)"}, 0, true, false));
+#if defined(__ANDROID__)
+  {
+    // [IzunaRecomp] The Vulkan driver: the system's, or a package the player
+    // installed (a .zip put in the IzunaRecomp folder's drivers/ - Turnip).
+    std::vector<std::string> values{""}, names{"System driver"};
+    for (const auto& p : izuna::gpu_driver::Installed()) {
+      values.push_back(p.id);
+      std::string name = p.name.size() > 48 ? p.name.substr(0, 46) + ".." : p.name;
+      if (!p.usable) name += " (needs Android API " + std::to_string(p.min_api) + ")";
+      names.push_back(name);
+    }
+    t.push_back(Strings(Tab::kDisplay, "GPU driver",
+                        "The Vulkan driver the game draws with. The system's own (Qualcomm's) cannot run the game's "
+                        "shaders; a Turnip driver can. Put a driver's .zip (AdrenoTools kind) in the drivers folder "
+                        "of the IzunaRecomp folder and start the app again to see it here. From the next start; if "
+                        "a driver keeps the game from starting, the system's is used the time after.",
+                        &Ng2Settings::gpu_driver, values, names, 0, true, false));
+  }
+#endif
+#if defined(_WIN32)  // (switching the screen's refresh: Windows only, pc_display_clock.cpp)
   t.push_back(Toggle(Tab::kDisplay, "Fullscreen refresh",
                      "In fullscreen on a screen whose refresh rate 60 does not divide (144, 165, 170 Hz) and without "
                      "G-Sync / FreeSync, a multiple of 60 switches it to 120, 180 or 240 Hz, so every frame stays on "
                      "screen equally long. Your desktop's rate comes back when the game closes.",
                      &Ng2Settings::pc_refresh_switch, true, false, true, "Monitor's own", "A multiple of 60"));
+#endif
 #endif
   // [IzunaRecomp] test44: every cutscene skippable, watched or not.
   t.push_back(Toggle(Tab::kGame, "Skip cutscenes with Cross / A",

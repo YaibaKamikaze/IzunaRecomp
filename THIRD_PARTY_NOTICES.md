@@ -69,6 +69,18 @@
 | PS5 payload SDK (John Törnblom; mihawk-99's fork, GPL-3.0; import stubs only are linked) | https://github.com/mihawk-99/PS5_PayloadSDK | `95c08f27386f` |
 | Mesa RADV for the PS5 (mihawk-99; MIT and Mesa's licences) | https://github.com/mihawk-99/PS5_Mesa | `0b2d6d1a61d9` |
 
+### Android (v0.2.2)
+
+| Component | Where | Licence |
+|---|---|---|
+| libadrenotools (Billy Laws), with linkernsbypass | [third_party/libadrenotools](third_party/libadrenotools) (upstream `8fae8ce254df`) | BSD-2-Clause |
+| SDL's Android Java glue | the SDK's `thirdparty/sdl3/android-project` | zlib |
+| GPU driver loading after EternalSonataReprise (Marco Andronaco) | [src/izuna/izuna_gpu_driver.cpp](src/izuna/izuna_gpu_driver.cpp) | MIT ([tools/android/licenses](tools/android/licenses)) |
+
+The APK carries these licences, and the ones of the libraries it links (as the
+Windows release), in its `IzunaRecomp/licenses` folder. No GPU driver ships with
+it: Turnip packages are the player's own download.
+
 ## Release-only files
 
 - `dxcompiler.dll` (Windows), `libdxcompiler.so` and `libdxil.so` (the Linux

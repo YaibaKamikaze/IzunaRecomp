@@ -1,6 +1,7 @@
 // Ninja Gaiden II for PS5 - the hub's pages (hub_pages.h).
 
 #include "ps5/hub/hub_pages.h"
+#include "izuna/izuna_touch.h"
 
 #include <algorithm>
 #include <cmath>
@@ -11,8 +12,19 @@ namespace ng2ps5::hub {
 
 namespace {
 
+#if defined(__ANDROID__)
+// [IzunaRecomp] Android: the on-screen touch controls, switched here (off by
+// default; turning them on asks first - izuna_touch.h).
+const char* const kHomeItems[] = {"START GAME", "SETTINGS", "MODS",           "DOWNLOADABLE CONTENT",
+                                  "SAVES",      "ABOUT",    "TOUCH CONTROLS", "QUIT"};
+constexpr int kHomeCount = 8;
+constexpr int kHomeTouch = 6, kHomeQuit = 7;
+#else
 const char* const kHomeItems[] = {"START GAME", "SETTINGS", "MODS", "DOWNLOADABLE CONTENT", "SAVES", "ABOUT", "QUIT"};
 constexpr int kHomeCount = 7;
+constexpr int kHomeTouch = -1, kHomeQuit = 6;
+#endif
+static_assert(kHomeCount <= kHomeSlides, "the hub's home_slide_ has a slot for each band");
 
 // [IzunaRecomp] What differs between the PS5 and a PC in the pages' words.
 #if defined(__PROSPERO__)
@@ -252,13 +264,28 @@ void Hub::Home(const PadState& pad) {
       case 3: GoTo(Page::kDlc); break;
       case 4: GoTo(Page::kSaves); break;
       case 5: GoTo(Page::kAbout); break;
-      case 6:
-        Confirm("QUIT", kQuitAsk, [this] {
-          quitting_ = true;
-          leaving_ = true;
-        });
+      default:
+        if (home_sel_ == kHomeQuit) {
+          Confirm("QUIT", kQuitAsk, [this] {
+            quitting_ = true;
+            leaving_ = true;
+          });
+        } else if (home_sel_ == kHomeTouch) {
+          if (!ctx_.settings->touch_controls) {
+            Confirm("TOUCH CONTROLS", "Do you REALLY wanna play Ninja Gaiden 2 with touch controls?", [this] {
+              ctx_.settings->touch_controls = true;
+              ctx_.settings->Save();
+              izuna::touch::SetEnabled(true);
+              Toast("Touch controls on");
+            });
+          } else {
+            ctx_.settings->touch_controls = false;
+            ctx_.settings->Save();
+            izuna::touch::SetEnabled(false);
+            Toast("Touch controls off");
+          }
+        }
         break;
-      default: break;
     }
   }
 
@@ -302,7 +329,10 @@ void Hub::Home(const PadState& pad) {
     // The icon on the left, the name right-aligned against the point.
     const ImU32 ink = on ? colour::kInk : (muted ? colour::kMuted : colour::kIvory);
     DrawIcon(c_, kHomeIcons[i], 96 + slide * 40.0f, y + h * 0.5f, 26, on ? colour::kRedDeep : ink);
-    c_.Slanted(GetFonts().menu, 52, tip - 26, y + 9, ink, kHomeItems[i], 1.0f, 0.2f);
+    const std::string label = i == kHomeTouch
+                                  ? std::string(kHomeItems[i]) + (ctx_.settings->touch_controls ? ": ON" : ": OFF")
+                                  : std::string(kHomeItems[i]);
+    c_.Slanted(GetFonts().menu, 52, tip - 26, y + 9, ink, label.c_str(), 1.0f, 0.2f);
     if (on && wipe_ < 0.999f) {
       // The slash: a bright diagonal that crosses the band once on focus.
       const float x = 140 + wipe_ * (tip - 140);

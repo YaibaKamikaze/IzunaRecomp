@@ -55,6 +55,9 @@
 #include <rex/ui/presenter.h>
 #include "native/native_renderer.h"
 #endif
+#include "native/native_shared_memory.h"  // [IzunaRecomp] test49 (every build)
+#include "izuna/izuna_touch.h"                // [IzunaRecomp] on-screen touch controls (Android)
+#include "izuna/izuna_gpu_driver.h"           // [IzunaRecomp] a chosen Vulkan driver package (Android)
 #include <atomic>
 #include <chrono>
 #include <fstream>
@@ -97,6 +100,24 @@ class Ng2App : public rex::ReXApp {
   // The graphics system the kernel's Vd* calls reach: ours (IzunaRecomp, M4) -
   // there is no GPU emulation in the build to fall back to.
   void OnPreSetup(rex::RuntimeConfig& config) override {
+    // [IzunaRecomp] test49: Linux and Android - the guest's physical memory in a
+    // buffer the GPU shares, for drivers that cannot import it (asked for when
+    // the runtime builds the guest's memory, after the Vulkan device exists).
+    ng2native::shared_memory::Install();
+#if defined(__ANDROID__)
+    // [IzunaRecomp] The Vulkan driver the player chose (Turnip), opened when the
+    // Vulkan instance is made, just after this (izuna_gpu_driver.h).
+    if (const std::string failed = izuna::gpu_driver::Install(settings_.gpu_driver); !failed.empty()) {
+      settings_.gpu_driver.clear();
+      settings_.Save();
+      izuna::pc::ShowError("The GPU driver \"" + failed + "\" kept the game from starting last time, so the "
+                           "system's driver is used now. Choose another in Settings > Display > GPU driver.");
+    }
+    // [IzunaRecomp] The on-screen touch controls: watched from the hub on, shown
+    // only if the player turned them on (izuna_touch.h).
+    izuna::touch::SetEnabled(settings_.touch_controls);
+    izuna::touch::Install();
+#endif
     ApplyDisplaySettings();
     ApplyTuning();
 
@@ -232,6 +253,11 @@ class Ng2App : public rex::ReXApp {
   std::optional<rex::PathConfig> OnFinalizePaths(
       const rex::PathConfig& defaults,
       std::function<void(rex::PathConfig)> resume) override {
+    // [IzunaRecomp] The Vulkan device and the window's presentation are up (this
+    // runs after them): the chosen GPU driver package works - the game may be
+    // started much later, or not at all this time (test53: quitting from the
+    // hub left the start marker and the next start blamed the driver).
+    izuna::gpu_driver::RendererStarted();
 #if defined(__PROSPERO__)
     // [ps5 port] The hub, every launch: it is the app's front screen, not a
     // first-run setup, and OPTIONS on it starts the game at once.
@@ -372,6 +398,10 @@ class Ng2App : public rex::ReXApp {
 
     // [IzunaRecomp] What the script mods draw (izuna_scripts.h).
     script_overlay_ = std::make_unique<izuna::scripts::Overlay>(drawer, immediate_drawer());
+#if defined(__ANDROID__)
+    // [IzunaRecomp] The on-screen touch controls, over everything (izuna_touch.h).
+    touch_overlay_ = std::make_unique<TouchOverlay>(drawer);
+#endif
 
     // The readouts, and the sampler behind them (it ticks twice a second, so
     // a readout switched on starts from a current figure).
@@ -869,6 +899,9 @@ class Ng2App : public rex::ReXApp {
     shader_overlay_.reset();
     script_overlay_.reset();
     perf_hud_.reset();
+#if defined(__ANDROID__)
+    touch_overlay_.reset();
+#endif
 
     // Every bind this port registered: a bind left behind holds a lambda
     // capturing `this`.
@@ -1183,6 +1216,9 @@ class Ng2App : public rex::ReXApp {
     // must not bring it back. The driver stays for NG2_PAD_SCRIPT testing.
     ng2::SetAutoSkipEnabled(false);
     input->AddDriver(ng2::MakeAutoSkipDriver());
+#if defined(__ANDROID__)
+    input->AddDriver(izuna::touch::MakeDriver());  // [IzunaRecomp] the on-screen controls (off unless chosen)
+#endif
     ng2::SetSkipAnyCutscene(settings_.skip_cutscenes_x);  // [IzunaRecomp] test44
     REXLOG_INFO("Input: every controller drives guest user 0");
   }
@@ -1523,6 +1559,17 @@ class Ng2App : public rex::ReXApp {
   std::thread ui_pump_thread_;
   std::atomic<bool> ui_pump_stop_{false};
   std::atomic<bool> ui_pump_pending_{false};
+#if defined(__ANDROID__)
+  // [IzunaRecomp] Draws the on-screen touch controls each frame.
+  class TouchOverlay final : public rex::ui::ImGuiDialog {
+   public:
+    explicit TouchOverlay(rex::ui::ImGuiDrawer* drawer) : rex::ui::ImGuiDialog(drawer) {}
+
+   protected:
+    void OnDraw(ImGuiIO& io) override { izuna::touch::Draw(io.DisplaySize.x, io.DisplaySize.y); }
+  };
+  std::unique_ptr<TouchOverlay> touch_overlay_;
+#endif
   std::atomic<bool> hub_open_{false};  // [IzunaRecomp] (Escape is the hub's Back while it is shown)
 
   // The dialogs. Each is owned here and closed by destroying it:

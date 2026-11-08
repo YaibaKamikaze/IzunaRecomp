@@ -7,10 +7,25 @@
 // before them has finished on the GPU. native_draw.cpp draws into the
 // segments. (At milestone M2 this was the test pattern: a cycling colour.)
 
+#if defined(__ANDROID__)
+#include <android/hardware_buffer.h>
+#define VK_USE_PLATFORM_ANDROID_KHR 1
+#endif
+#if defined(__linux__)  // (Android too)
+#include <fcntl.h>
+#include <linux/dma-buf.h>
+#include <linux/dma-heap.h>
+#include <sys/ioctl.h>
+#include <sys/mman.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#endif
 #include "native/native_phase.h"
 #include "native/native_renderer.h"
 #include "izuna/izuna_pc.h"
 #include "native/native_draw.h"
+#include "native/native_shared_memory.h"
+#include "izuna/izuna_gpu_driver.h"
 
 #include <array>
 #include <initializer_list>
@@ -331,15 +346,435 @@ void ProbeGuestMemoryImport(PFN_vkGetInstanceProcAddr gipa, VkInstance instance)
 // 4 KB blocks into a host-visible buffer, compared. If it holds, the native
 // renderer reads vertices, indices and textures in place - no uploads, no
 // write watches. Once, at start; logged.
+#if defined(__linux__)  // (Android too)
+// [IzunaRecomp] test47: Android's drivers (Qualcomm's and Turnip) have no
+// VK_EXT_external_memory_host, so the guest's memory cannot be imported the
+// PC's way. They can share memory the other way - a buffer the GPU and the CPU
+// both map - and this probe finds which way works on the device, and how fast
+// the CPU is through it, before the guest's memory is built on it:
+//   1. an AHardwareBuffer (BLOB), imported into Vulkan; its dma-buf mapped by the CPU
+//   2. a Vulkan allocation exported as a file descriptor, mapped by the CPU
+//   3. a dma-buf from /dev/dma_heap/system, imported into Vulkan
+// For each: allocated at the guest's full 512 MB, then two CPU views of it
+// (the guest maps its memory several times), CPU->GPU and GPU->CPU checks, and
+// the CPU's write and read speed through the mapping against plain memory.
+// test48: on Linux too - SteamOS's RADV has no VK_EXT_external_memory_host
+// either (the Steam Deck drew nothing) - where 2 is the likely way; and the
+// GPU -> CPU check waits for the GPU's writes properly (a barrier to the host),
+// then with a dma-buf sync too, to see which one a device needs.
+namespace android_probe {
+
+constexpr VkDeviceSize kFull = 0x20000000;  // the guest's physical memory
+constexpr VkDeviceSize kTest = 64ull << 20;  // speed test size
+
+double Seconds() {
+  return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+// MB/s writing then reading `size` bytes at p.
+std::pair<double, double> Speed(uint8_t* p, size_t size) {
+  double t0 = Seconds();
+  std::memset(p, 0x5A, size);
+  double t1 = Seconds();
+  uint64_t sum = 0;
+  const uint64_t* q = reinterpret_cast<const uint64_t*>(p);
+  for (size_t i = 0; i < size / 8; ++i) sum += q[i];
+  double t2 = Seconds();
+  volatile uint64_t keep = sum;
+  (void)keep;
+  const double mb = double(size) / (1 << 20);
+  return {mb / std::max(t1 - t0, 1e-9), mb / std::max(t2 - t1, 1e-9)};
+}
+
+std::string TypeFlags(uint32_t index) {
+  VkPhysicalDeviceMemoryProperties props;
+  g.vk.GetPhysicalDeviceMemoryProperties(VkPhysicalDevice(g.dev->physical_device), &props);
+  if (index >= props.memoryTypeCount) return "?";
+  const VkMemoryPropertyFlags f = props.memoryTypes[index].propertyFlags;
+  std::string s;
+  if (f & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) s += "device-local ";
+  if (f & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) s += "host-visible ";
+  if (f & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) s += "coherent ";
+  if (f & VK_MEMORY_PROPERTY_HOST_CACHED_BIT) s += "cached ";
+  if (f & VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT) s += "lazy ";
+  return fmt::format("type {} ({})", index, s);
+}
+
+// Runs `record` on the GPU once and waits.
+bool RunOnce(const std::function<void(VkCommandBuffer)>& record) {
+  Slot& s = g.slots[g.next];
+  g.vk.WaitForFences(g.device, 1, &s.fence, VK_TRUE, UINT64_MAX);
+  g.vk.ResetFences(g.device, 1, &s.fence);
+  g.vk.ResetCommandBuffer(s.cmd, 0);
+  VkCommandBufferBeginInfo bi = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+  bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+  g.vk.BeginCommandBuffer(s.cmd, &bi);
+  record(s.cmd);
+  g.vk.EndCommandBuffer(s.cmd);
+  VkSubmitInfo si = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
+  si.commandBufferCount = 1;
+  si.pCommandBuffers = &s.cmd;
+  VkResult r;
+  {
+    std::lock_guard<std::recursive_mutex> lock(*g.dev->queue_mutex);
+    r = g.vk.QueueSubmit(VkQueue(g.dev->queue), 1, &si, s.fence);
+  }
+  if (r != VK_SUCCESS) return false;
+  return g.vk.WaitForFences(g.device, 1, &s.fence, VK_TRUE, UINT64_MAX) == VK_SUCCESS;
+}
+
+// The checks on a buffer the GPU has (buf) and the CPU maps twice (a, b);
+// dmabuf_fd: the dma-buf behind the mapping, for a sync ioctl (-1: none).
+void Check(const char* method, VkBuffer buf, uint8_t* a, uint8_t* b, int dmabuf_fd = -1) {
+  // Two CPU views of the same memory.
+  if (b) {
+    a[0x1234] = 0x77;
+    a[kFull - 7] = 0x66;
+    REXLOG_INFO("[native] android memory {}: second CPU view {}", method,
+                (b[0x1234] == 0x77 && b[kFull - 7] == 0x66) ? "sees the first's writes" : "DOES NOT see the first's writes");
+  }
+  // CPU -> GPU: patterns at four places, copied by the GPU into a readback buffer.
+  static VkBuffer readback = VK_NULL_HANDLE;
+  static void* mapped = nullptr;
+  if (!readback && !CreateReadback(4 * 4096, &readback, &mapped)) {
+    REXLOG_WARN("[native] android memory: no readback buffer");
+    return;
+  }
+  const VkDeviceSize offs[4] = {0x100000, 0x4000000, 0xA000000, kFull - 0x2000};
+  for (int i = 0; i < 4; ++i)
+    for (int k = 0; k < 4096; ++k) a[offs[i] + k] = uint8_t(k * 7 + i * 31 + 1);
+  bool ok = RunOnce([&](VkCommandBuffer cmd) {
+    VkBufferCopy regions[4];
+    for (int i = 0; i < 4; ++i) regions[i] = {offs[i], VkDeviceSize(i) * 4096, 4096};
+    g.vk.CmdCopyBuffer(cmd, buf, readback, 4, regions);
+  });
+  int same = 0;
+  for (int i = 0; ok && i < 4; ++i) same += memcmp(static_cast<uint8_t*>(mapped) + i * 4096, a + offs[i], 4096) == 0;
+  REXLOG_INFO("[native] android memory {}: CPU -> GPU {} ({} of 4 blocks the same)", method,
+              ok ? (same == 4 ? "works" : "WRONG") : "submit failed", same);
+  // GPU -> CPU: the GPU fills a block, the CPU reads it.
+  auto fill = reinterpret_cast<PFN_vkCmdFillBuffer>(g.vk.GetDeviceProcAddr(g.device, "vkCmdFillBuffer"));
+  if (fill) {
+    // (each try on its own block, with its own value)
+    auto gpu_to_cpu = [&](const char* how, VkDeviceSize at, uint32_t value, bool barrier, bool sync) {
+      std::memset(a + at, 0, 4096);
+      ok = RunOnce([&](VkCommandBuffer cmd) {
+        fill(cmd, buf, at, 4096, value);
+        if (barrier) {  // the GPU's write made available to the host
+          VkBufferMemoryBarrier bb = {VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+          bb.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+          bb.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+          bb.srcQueueFamilyIndex = bb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+          bb.buffer = buf;
+          bb.offset = at;
+          bb.size = 4096;
+          g.vk.CmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 0, nullptr, 1,
+                                  &bb, 0, nullptr);
+        }
+      });
+      if (sync && dmabuf_fd >= 0) {
+        dma_buf_sync ds = {DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ};
+        ioctl(dmabuf_fd, DMA_BUF_IOCTL_SYNC, &ds);
+      }
+      uint32_t v = 0;
+      std::memcpy(&v, a + at + 4092, 4);
+      if (sync && dmabuf_fd >= 0) {
+        dma_buf_sync ds = {DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ};
+        ioctl(dmabuf_fd, DMA_BUF_IOCTL_SYNC, &ds);
+      }
+      REXLOG_INFO("[native] android memory {}: GPU -> CPU {}: {} (read {:#x})", method, how,
+                  ok ? (v == value ? "works" : "WRONG") : "submit failed", v);
+    };
+    gpu_to_cpu("after the fence only", 0x200000, 0xA5C3E10Fu, false, false);
+    gpu_to_cpu("with a barrier to the host", 0x300000, 0x5A3C1EF0u, true, false);
+    if (dmabuf_fd >= 0) gpu_to_cpu("with a barrier and a dma-buf sync", 0x400000, 0x13579BDFu, true, true);
+  }
+  // The CPU's speed through it, against plain memory.
+  auto [w, r] = Speed(a, kTest);
+  std::vector<uint8_t> plain(kTest);
+  auto [pw, pr] = Speed(plain.data(), kTest);
+  REXLOG_INFO("[native] android memory {}: CPU write {:.0f} MB/s, read {:.0f} MB/s (plain memory: {:.0f} / {:.0f})",
+              method, w, r, pw, pr);
+}
+
+VkBuffer ExternalBuffer(VkExternalMemoryHandleTypeFlagBits handle, VkDeviceSize size) {
+  VkExternalMemoryBufferCreateInfo ebci = {VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO};
+  ebci.handleTypes = handle;
+  VkBufferCreateInfo bci = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+  bci.pNext = &ebci;
+  bci.size = size;
+  bci.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+  VkBuffer buf = VK_NULL_HANDLE;
+  if (g.vk.CreateBuffer(g.device, &bci, nullptr, &buf) != VK_SUCCESS) return VK_NULL_HANDLE;
+  return buf;
+}
+
+#if defined(__ANDROID__)
+// The fds an AHardwareBuffer's handle carries (its dma-buf among them).
+std::vector<int> AhbFds(AHardwareBuffer* ahb) {
+  std::vector<int> fds;
+  int sv[2];
+  if (socketpair(AF_UNIX, SOCK_SEQPACKET, 0, sv) != 0) return fds;
+  if (AHardwareBuffer_sendHandleToUnixSocket(ahb, sv[0]) == 0) {
+    char data[4096];
+    alignas(cmsghdr) char control[CMSG_SPACE(sizeof(int) * 32)];
+    iovec iov = {data, sizeof(data)};
+    msghdr msg = {};
+    msg.msg_iov = &iov;
+    msg.msg_iovlen = 1;
+    msg.msg_control = control;
+    msg.msg_controllen = sizeof(control);
+    if (recvmsg(sv[1], &msg, 0) > 0) {
+      for (cmsghdr* c = CMSG_FIRSTHDR(&msg); c; c = CMSG_NXTHDR(&msg, c)) {
+        if (c->cmsg_level == SOL_SOCKET && c->cmsg_type == SCM_RIGHTS) {
+          const int n = int((c->cmsg_len - CMSG_LEN(0)) / sizeof(int));
+          for (int i = 0; i < n; ++i) fds.push_back(reinterpret_cast<int*>(CMSG_DATA(c))[i]);
+        }
+      }
+    }
+  }
+  close(sv[0]);
+  close(sv[1]);
+  return fds;
+}
+
+void TryAhb() {
+  const char* m = "1 (AHardwareBuffer)";
+  AHardwareBuffer_Desc d = {};
+  d.width = uint32_t(kFull);
+  d.height = 1;
+  d.layers = 1;
+  d.format = AHARDWAREBUFFER_FORMAT_BLOB;
+  d.usage = AHARDWAREBUFFER_USAGE_CPU_READ_OFTEN | AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN |
+            AHARDWAREBUFFER_USAGE_GPU_DATA_BUFFER;
+  AHardwareBuffer* ahb = nullptr;
+  int rc = AHardwareBuffer_allocate(&d, &ahb);
+  if (rc != 0 || !ahb) {
+    REXLOG_WARN("[native] android memory {}: 512 MB not allocated ({})", m, rc);
+    return;
+  }
+  auto props_fn = reinterpret_cast<PFN_vkGetAndroidHardwareBufferPropertiesANDROID>(
+      g.vk.GetDeviceProcAddr(g.device, "vkGetAndroidHardwareBufferPropertiesANDROID"));
+  if (!props_fn) {
+    REXLOG_WARN("[native] android memory {}: the driver's extension is not enabled", m);
+    return;
+  }
+  VkAndroidHardwareBufferPropertiesANDROID hp = {VK_STRUCTURE_TYPE_ANDROID_HARDWARE_BUFFER_PROPERTIES_ANDROID};
+  VkResult r = props_fn(g.device, ahb, &hp);
+  if (r != VK_SUCCESS || !hp.memoryTypeBits) {
+    REXLOG_WARN("[native] android memory {}: not importable ({}, types {:#x})", m, int(r), hp.memoryTypeBits);
+    return;
+  }
+  VkBuffer buf = ExternalBuffer(VK_EXTERNAL_MEMORY_HANDLE_TYPE_ANDROID_HARDWARE_BUFFER_BIT_ANDROID, kFull);
+  VkImportAndroidHardwareBufferInfoANDROID imp = {VK_STRUCTURE_TYPE_IMPORT_ANDROID_HARDWARE_BUFFER_INFO_ANDROID};
+  imp.buffer = ahb;
+  VkMemoryAllocateInfo mai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+  mai.pNext = &imp;
+  mai.allocationSize = hp.allocationSize;
+  mai.memoryTypeIndex = uint32_t(__builtin_ctz(hp.memoryTypeBits));
+  VkDeviceMemory mem = VK_NULL_HANDLE;
+  if (!buf || (r = g.vk.AllocateMemory(g.device, &mai, nullptr, &mem)) != VK_SUCCESS ||
+      (r = g.vk.BindBufferMemory(g.device, buf, mem, 0)) != VK_SUCCESS) {
+    REXLOG_WARN("[native] android memory {}: Vulkan import failed ({})", m, int(r));
+    return;
+  }
+  REXLOG_INFO("[native] android memory {}: imported, {} (types {:#x})", m, TypeFlags(mai.memoryTypeIndex),
+              hp.memoryTypeBits);
+  // Its dma-buf, mapped twice.
+  int fd = -1;
+  for (int f : AhbFds(ahb)) {
+    const off_t sz = lseek(f, 0, SEEK_END);
+    REXLOG_INFO("[native] android memory {}: handle fd of {} bytes", m, int64_t(sz));
+    if (sz >= off_t(kFull) && fd < 0) fd = f;
+  }
+  if (fd < 0) {
+    REXLOG_WARN("[native] android memory {}: no fd of the buffer's size among its handle's", m);
+    return;
+  }
+  auto* a = static_cast<uint8_t*>(mmap(nullptr, kFull, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0));
+  auto* b = static_cast<uint8_t*>(mmap(nullptr, kFull, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0));
+  if (a == MAP_FAILED) {
+    REXLOG_WARN("[native] android memory {}: the CPU cannot map it (errno {})", m, errno);
+    return;
+  }
+  Check(m, buf, a, b == MAP_FAILED ? nullptr : b, fd);
+}
+#endif  // __ANDROID__
+
+void TryExportFd() {
+  const char* m = "2 (Vulkan memory exported as an fd)";
+  auto get_fd = reinterpret_cast<PFN_vkGetMemoryFdKHR>(g.vk.GetDeviceProcAddr(g.device, "vkGetMemoryFdKHR"));
+  if (!get_fd) {
+    REXLOG_WARN("[native] android memory {}: the driver's extension is not enabled", m);
+    return;
+  }
+  constexpr VkMemoryPropertyFlags kHost = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+  const VkMemoryPropertyFlags kKinds[] = {kHost | VK_MEMORY_PROPERTY_HOST_CACHED_BIT, kHost,
+                                          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT};
+  for (VkExternalMemoryHandleTypeFlagBits handle :
+       {VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT}) {
+    const char* hn = handle == VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT ? "dma-buf" : "opaque fd";
+    uint32_t tried = 0;  // memory types already tried
+    for (const VkMemoryPropertyFlags kind : kKinds) {
+      VkBuffer buf = ExternalBuffer(handle, kFull);
+      if (!buf) {
+        REXLOG_WARN("[native] android memory {} as {}: no buffer", m, hn);
+        break;
+      }
+      VkMemoryRequirements req;
+      g.vk.GetBufferMemoryRequirements(g.device, buf, &req);
+      const uint32_t type = MemoryType(req.memoryTypeBits & ~tried, {kind});
+      if (type == UINT32_MAX) continue;
+      tried |= 1u << type;
+      VkExportMemoryAllocateInfo exp = {VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO};
+      exp.handleTypes = handle;
+      VkMemoryAllocateInfo mai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+      mai.pNext = &exp;
+      mai.allocationSize = req.size;
+      mai.memoryTypeIndex = type;
+      VkDeviceMemory mem = VK_NULL_HANDLE;
+      VkResult r = VK_ERROR_UNKNOWN;
+      if ((r = g.vk.AllocateMemory(g.device, &mai, nullptr, &mem)) != VK_SUCCESS ||
+          (r = g.vk.BindBufferMemory(g.device, buf, mem, 0)) != VK_SUCCESS) {
+        REXLOG_WARN("[native] android memory {} as {}: allocation failed ({}, {})", m, hn, int(r), TypeFlags(type));
+        continue;
+      }
+      VkMemoryGetFdInfoKHR gfi = {VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR};
+      gfi.memory = mem;
+      gfi.handleType = handle;
+      int fd = -1;
+      if ((r = get_fd(g.device, &gfi, &fd)) != VK_SUCCESS || fd < 0) {
+        REXLOG_WARN("[native] android memory {} as {}: no fd ({}, {})", m, hn, int(r), TypeFlags(type));
+        continue;
+      }
+      REXLOG_INFO("[native] android memory {} as {}: allocated, {}, fd of {} bytes", m, hn, TypeFlags(type),
+                  int64_t(lseek(fd, 0, SEEK_END)));
+      auto* a = static_cast<uint8_t*>(mmap(nullptr, kFull, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0));
+      auto* b = static_cast<uint8_t*>(mmap(nullptr, kFull, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0));
+      if (a == MAP_FAILED) {
+        REXLOG_WARN("[native] android memory {} as {}: the CPU cannot map its fd (errno {})", m, hn, errno);
+        continue;
+      }
+      Check(fmt::format("{} as {}, {}", m, hn, TypeFlags(type)).c_str(), buf, a, b == MAP_FAILED ? nullptr : b,
+            handle == VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT ? fd : -1);
+      rex::FlushLogging();
+    }
+  }
+}
+
+void TryDmaHeap() {
+  const char* m = "3 (dma-buf heap)";
+  for (const char* heap : {"/dev/dma_heap/system", "/dev/dma_heap/qcom,system", "/dev/dma_heap/system-uncached"}) {
+    const int hfd = open(heap, O_RDONLY | O_CLOEXEC);
+    if (hfd < 0) {
+      REXLOG_INFO("[native] android memory {}: {} not openable (errno {})", m, heap, errno);
+      continue;
+    }
+    dma_heap_allocation_data ad = {};
+    ad.len = kFull;
+    ad.fd_flags = O_RDWR | O_CLOEXEC;
+    const int rc = ioctl(hfd, DMA_HEAP_IOCTL_ALLOC, &ad);
+    close(hfd);
+    if (rc != 0) {
+      REXLOG_WARN("[native] android memory {}: {} would not allocate 512 MB (errno {})", m, heap, errno);
+      continue;
+    }
+    const int fd = int(ad.fd);
+    auto props_fn = reinterpret_cast<PFN_vkGetMemoryFdPropertiesKHR>(
+        g.vk.GetDeviceProcAddr(g.device, "vkGetMemoryFdPropertiesKHR"));
+    VkMemoryFdPropertiesKHR fp = {VK_STRUCTURE_TYPE_MEMORY_FD_PROPERTIES_KHR};
+    VkResult r = props_fn ? props_fn(g.device, VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, fd, &fp)
+                          : VK_ERROR_EXTENSION_NOT_PRESENT;
+    if (r != VK_SUCCESS || !fp.memoryTypeBits) {
+      REXLOG_WARN("[native] android memory {}: {} buffer not importable ({}, types {:#x})", m, heap, int(r),
+                  fp.memoryTypeBits);
+      continue;
+    }
+    VkBuffer buf = ExternalBuffer(VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, kFull);
+    VkImportMemoryFdInfoKHR imp = {VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR};
+    imp.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
+    imp.fd = dup(fd);  // (Vulkan owns the fd it imports)
+    VkMemoryRequirements req;
+    if (buf) g.vk.GetBufferMemoryRequirements(g.device, buf, &req);
+    VkMemoryAllocateInfo mai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    mai.pNext = &imp;
+    mai.allocationSize = buf ? req.size : kFull;
+    mai.memoryTypeIndex = uint32_t(__builtin_ctz(fp.memoryTypeBits & (buf ? req.memoryTypeBits : ~0u) ?: fp.memoryTypeBits));
+    VkDeviceMemory mem = VK_NULL_HANDLE;
+    if (!buf || (r = g.vk.AllocateMemory(g.device, &mai, nullptr, &mem)) != VK_SUCCESS ||
+        (r = g.vk.BindBufferMemory(g.device, buf, mem, 0)) != VK_SUCCESS) {
+      REXLOG_WARN("[native] android memory {}: {} Vulkan import failed ({})", m, heap, int(r));
+      continue;
+    }
+    REXLOG_INFO("[native] android memory {}: {} imported, {}", m, heap, TypeFlags(mai.memoryTypeIndex));
+    auto* a = static_cast<uint8_t*>(mmap(nullptr, kFull, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0));
+    auto* b = static_cast<uint8_t*>(mmap(nullptr, kFull, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0));
+    if (a == MAP_FAILED) {
+      REXLOG_WARN("[native] android memory {}: the CPU cannot map it (errno {})", m, errno);
+      continue;
+    }
+    Check(m, buf, a, b == MAP_FAILED ? nullptr : b, fd);
+    return;
+  }
+}
+
+void Run() {
+  VkPhysicalDeviceMemoryProperties props;
+  g.vk.GetPhysicalDeviceMemoryProperties(VkPhysicalDevice(g.dev->physical_device), &props);
+  for (uint32_t i = 0; i < props.memoryTypeCount; ++i)
+    REXLOG_INFO("[native] android memory: {} on heap {} ({} MB)", TypeFlags(i), props.memoryTypes[i].heapIndex,
+                props.memoryHeaps[props.memoryTypes[i].heapIndex].size >> 20);
+#if defined(__ANDROID__)
+  TryAhb();
+  rex::FlushLogging();
+#endif
+  TryExportFd();
+  rex::FlushLogging();
+  TryDmaHeap();
+  REXLOG_INFO("[native] android memory: probe done");
+  rex::FlushLogging();
+}
+
+}  // namespace android_probe
+#endif  // __linux__
+
 void TestGuestMemoryImport() {
   auto* memory = REX_KERNEL_MEMORY();
   if (!memory) return;
   uint8_t* base = memory->physical_membase();
   constexpr VkDeviceSize kSize = 0x20000000;  // 512 MB
+  {
+    // [IzunaRecomp] test49: the guest's memory built on a buffer the GPU shares
+    // (native_shared_memory.h: Android, the Steam Deck, Linux AMD / Intel) -
+    // that buffer is the one the renderer reads, nothing to import.
+    ng2native::shared_memory::Guest shared;
+    if (ng2native::shared_memory::RendererBuffer(&shared)) {
+      const VkBuffer guest = VkBuffer(shared.buffer);
+      uint64_t address = 0;
+      if (g.vk.GetBufferDeviceAddress) {
+        VkBufferDeviceAddressInfo bai = {VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
+        bai.buffer = guest;
+        address = g.vk.GetBufferDeviceAddress(g.device, &bai);
+      }
+      VkBuffer readback = VK_NULL_HANDLE;
+      void* mapped = nullptr;
+      if (!CreateReadback(4 * 4096, &readback, &mapped)) return;
+      g.guest = guest;
+      g.guest_address = address;
+      g.readback = readback;
+      g.readback_mapped = mapped;
+      REXLOG_INFO("[native] memory: the guest's 512 MB are shared with the GPU (memory type {}, device address {:#x}); "
+                  "read checks at frame 300, then every 1800", shared.type, address);
+      return;
+    }
+  }
   auto getHostProps = reinterpret_cast<PFN_vkGetMemoryHostPointerPropertiesEXT>(
       g.vk.GetDeviceProcAddr(g.device, "vkGetMemoryHostPointerPropertiesEXT"));
   if (!getHostProps) {
     REXLOG_WARN("[native] memory import: vkGetMemoryHostPointerPropertiesEXT unavailable (extension not enabled)");
+#if defined(__linux__)  // (Android too)
+    android_probe::Run();
+#endif
     return;
   }
   // [test9] Freeze the range's protection first. The emulator changes it when
@@ -774,6 +1209,25 @@ bool Initialize() {
   });
   REXLOG_INFO("[native] renderer up: {}x{} frames on the Vulkan device (app renderer features {})", FrameWidth(),
               FrameHeight(), g.dev->app_renderer_features);
+  izuna::gpu_driver::RendererStarted();  // [IzunaRecomp] the chosen driver package works
+#if defined(__ANDROID__)
+  {
+    // [IzunaRecomp] Every one of the game's translated shaders uses 64-bit
+    // integers (its memory addresses): a driver without them - Qualcomm's own
+    // on Adreno 7xx (test52: every pipeline VK_ERROR_UNKNOWN) - draws nothing.
+    auto features_fn = reinterpret_cast<PFN_vkGetPhysicalDeviceFeatures>(
+        gipa(instance, "vkGetPhysicalDeviceFeatures"));
+    VkPhysicalDeviceFeatures f = {};
+    if (features_fn) features_fn(VkPhysicalDevice(g.dev->physical_device), &f);
+    if (features_fn && !f.shaderInt64) {
+      REXLOG_ERROR("[native] this GPU driver has no 64-bit integers in shaders: the game's shaders cannot run on it");
+      izuna::pc::ShowError(
+          "This GPU driver cannot run IzunaRecomp's shaders (it has no 64-bit integers in shaders), so the game "
+          "will stay black.\n\nPut a Turnip driver's .zip in the drivers folder of the IzunaRecomp folder, start "
+          "the app again, and choose it in Settings > Display > GPU driver.");
+    }
+  }
+#endif
   return true;
 }
 

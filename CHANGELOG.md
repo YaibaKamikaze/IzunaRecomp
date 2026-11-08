@@ -1,5 +1,49 @@
 # Changelog
 
+## v0.2.2 — Android, Linux on AMD and Intel GPUs, Windows fixes
+
+> [!WARNING]
+> **Android performance is poor at the moment.** The Android build runs the game, but not well yet — it
+> still has to be optimised. Treat it as an early preview.
+
+**Android (new)**
+- An APK for Android 11 and newer (64-bit ARM), tuned for Snapdragon — tested on an AYN Thor
+  (Snapdragon 8 Gen 2). The game's shaders are built in.
+- **Turnip drivers:** put a driver package (an AdrenoTools `.zip`, e.g. Balemuni's Aurora "Universal" or
+  Purple Turnip) in `IzunaRecomp/drivers/`, start the app again and choose it in Settings › Display ›
+  GPU driver. A package that needs a newer Android than the device's is listed but never loaded; one that
+  keeps the game from starting is replaced by the system's driver at the next start. Qualcomm's own
+  driver cannot run the game's shaders (they use 64-bit integers) — the app says so instead of staying black.
+- The game's memory is shared with the GPU through an Android hardware buffer, as the renderer reads it
+  in place.
+- Full screen (no status bar over the picture), "All files access" for your copy of the game, Android's
+  own folder picker in the hub, and a visible `IzunaRecomp` folder for settings, logs, mods, DLC, saves
+  and drivers.
+- **Touch controls**, off by default: TOUCH CONTROLS in the hub's main menu turns them on (after asking
+  whether you really want to play Ninja Gaiden II that way). Moving and resizing them is still to come.
+
+**Linux**
+- **Draws on AMD and Intel GPUs, the Steam Deck included.** Their drivers cannot import the game's memory
+  the way the renderer did on Windows (the picture stayed a rainbow); the game's memory is now built on
+  Vulkan memory shared with the GPU instead — tested on the Steam Deck at a steady 60 fps.
+- Auto resolution reads the real screen size: the Steam Deck draws its own 1280×800 instead of 1920×1080
+  at 2×.
+- (Since the replaced v0.2.1 AppImage:) any distribution from 2022 on, any desktop (X11 or Wayland), sound
+  through PipeWire, PulseAudio or ALSA, controllers through udev, and a second build for processors
+  without AVX2.
+
+**Windows**
+- A `default.xexp` in the game folder (another recompilation can leave one there) is ignored instead of
+  applied as a title update, so the game no longer fails to start because of it.
+
+**All**
+- The renderer enables the "storage images without a format" features every translated shader declares,
+  on any driver that offers them.
+
+**PS5**
+- Left unchanged: this release carries the same `IzunaRecomp-0.2.1-ps5.zip` as v0.2.1 (its source is
+  the `v0.2.1-ps5` tag). The `default.xexp` fix and the rest of v0.2.2 are not in it.
+
 ## v0.2.1 — Linux, PS5, smoother starts, accuracy fixes
 
 **Linux AppImage replaced (2026-11-07).** The first v0.2.1 AppImage could not

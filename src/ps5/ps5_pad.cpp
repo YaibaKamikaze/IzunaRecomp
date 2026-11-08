@@ -1,6 +1,7 @@
 // Ninja Gaiden II for PS5 - the DualSense for the menus (ps5_pad.h).
 
 #include "ps5/ps5_pad.h"
+#include "izuna/izuna_touch.h"
 
 #include <cstring>
 
@@ -170,6 +171,9 @@ bool ReadRaw(int32_t& handle, uint32_t& b) {
   } else if (keys) {
     g_style.store(PromptStyle::kKeyboard, std::memory_order_relaxed);
   }
+#if defined(__ANDROID__)
+  pad |= izuna::touch::PadBits();  // [IzunaRecomp] the on-screen controls, if on
+#endif
   b = keys | pad;
   return true;
 }

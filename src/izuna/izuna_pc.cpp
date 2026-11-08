@@ -174,6 +174,7 @@ void InstallCrashDumps(const std::filesystem::path& logs) {
 #include <rex/logging.h>
 #if defined(__linux__) && !defined(__PROSPERO__)
 #include <SDL3/SDL_messagebox.h>
+#include <SDL3/SDL_video.h>
 #endif
 
 namespace izuna::pc {
@@ -186,7 +187,29 @@ void ShowError(const std::string& text) {
   SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "IzunaRecomp", text.c_str(), nullptr);
 #endif
 }
+#if defined(__linux__) && !defined(__PROSPERO__)
+// [IzunaRecomp] Linux and Android: the primary display's current mode, in
+// pixels (its size times its pixel density on a HiDPI screen). On the Steam
+// Deck in Game Mode, the 1280x800 gamescope gives the game - without it Auto
+// fell back to 1920x1080 at 2x and drew far more than the screen shows
+// (test50's log: "screen 0x0").
+bool ScreenSize(int* width, int* height) {
+  const SDL_DisplayID display = SDL_GetPrimaryDisplay();
+  const SDL_DisplayMode* mode = display ? SDL_GetCurrentDisplayMode(display) : nullptr;
+  if (!mode || mode->w <= 0 || mode->h <= 0) return false;
+  const float density = mode->pixel_density > 0.0f ? mode->pixel_density : 1.0f;
+  *width = int(mode->w * density + 0.5f);
+  *height = int(mode->h * density + 0.5f);
+#if defined(__ANDROID__)
+  // (the app is landscape; the display may be described in its natural,
+  // portrait orientation)
+  if (*height > *width) std::swap(*width, *height);
+#endif
+  return true;
+}
+#else
 bool ScreenSize(int*, int*) { return false; }
+#endif
 void RaiseThreadPriority(int) {}
 void SleepNs(int64_t ns) {
   if (ns > 0) std::this_thread::sleep_for(std::chrono::nanoseconds(ns));

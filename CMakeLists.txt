@@ -18,10 +18,16 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # [IzunaRecomp] test43: the Linux desktop build (the AppImage, tools/linux):
 # a PC like Windows - the hub, SDL input and sound, the shaders built from the
 # player's copy at start - on Linux. Not the PS5 build, nor the PS5 host test.
-if(UNIX AND NOT APPLE AND NOT PS5 AND NOT NG2_PS5_HOST_TEST)
+if(UNIX AND NOT APPLE AND NOT ANDROID AND NOT PS5 AND NOT NG2_PS5_HOST_TEST)
     set(IZUNA_LINUX ON)
 endif()
-if(WIN32 OR IZUNA_LINUX)
+# [IzunaRecomp] Android (tools/android): the PC's front end - the hub, SDL input
+# and sound - but the game's shaders built in, as on the PS5 (no DXC on the
+# device), and the game is the library the app's activity loads (libmain.so).
+if(ANDROID)
+    set(IZUNA_ANDROID ON)
+endif()
+if(WIN32 OR IZUNA_LINUX OR IZUNA_ANDROID)
     set(IZUNA_PC ON)
 endif()
 
@@ -70,6 +76,9 @@ set(NG2_SOURCES
     src/diag_hooks.cpp
     src/native/d3d_trace.cpp  # [native renderer track]
     src/native/native_renderer.cpp
+    src/native/native_shared_memory.cpp  # [IzunaRecomp] guest memory in a GPU-shared buffer (Android, Linux)
+    src/izuna/izuna_touch.cpp           # [IzunaRecomp] on-screen touch controls (Android; off by default)
+    src/izuna/izuna_gpu_driver.cpp      # [IzunaRecomp] a chosen Vulkan driver package (Android: Turnip)
     src/native/native_draw.cpp       # (its parts share native_draw_internal.h)
     src/native/native_pipelines.cpp
     src/native/native_textures.cpp
@@ -205,6 +214,22 @@ endif()
 
 if(WIN32)
     add_executable(ng2 WIN32 ${NG2_SOURCES})
+elseif(IZUNA_ANDROID)
+    # SDL's Java activity loads it and calls SDL_main (the SDK's main, renamed
+    # by SDL_main.h on Android).
+    add_library(ng2 SHARED ${NG2_SOURCES})
+    set_target_properties(ng2 PROPERTIES OUTPUT_NAME main)
+    target_link_libraries(ng2 PRIVATE android log nativewindow)
+    # libadrenotools (bylaws, BSD-2-Clause): loads a Vulkan driver package the
+    # player chose (Turnip) in place of the system driver
+    # (src/izuna/izuna_gpu_driver.cpp). Its hook libraries are opened by name
+    # from the app's native library folder, so they are built beside
+    # libmain.so and packaged with it (tools/android/make_apk.sh).
+    add_subdirectory(third_party/libadrenotools EXCLUDE_FROM_ALL)
+    set_target_properties(main_hook file_redirect_hook gsl_alloc_hook hook_impl PROPERTIES
+        LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+    target_link_libraries(ng2 PRIVATE adrenotools)
+    add_dependencies(ng2 main_hook file_redirect_hook gsl_alloc_hook hook_impl)
 else()
     add_executable(ng2 ${NG2_SOURCES})
 endif()
@@ -217,7 +242,7 @@ rexglue_setup_target(ng2)
 # host test (no DXC) have them built in: tools/native/build_shaders.sh writes
 # out/native-shaders/shader_cache.cpp - made from the game: build output,
 # never committed.
-if(IZUNA_PC)
+if(IZUNA_PC AND NOT IZUNA_ANDROID)
     target_compile_definitions(ng2 PRIVATE IZUNA_SHADERS_FROM_GAME=1)
 else()
     set(NG2_SHADER_CACHE "${CMAKE_CURRENT_SOURCE_DIR}/out/native-shaders/shader_cache.cpp")
@@ -346,7 +371,7 @@ if(WIN32)
     # .exe to read the minidumps with (kept with the build, not shipped).
     target_link_libraries(ng2 PRIVATE dbghelp winmm)
 endif()
-if(IZUNA_PC)
+if(IZUNA_PC AND NOT IZUNA_ANDROID)
     # [IzunaRecomp] The game's shaders built from the player's own copy at
     # startup (src/izuna/izuna_shaders.cpp): our XenosRecomp fork's translator
     # (third_party/xenosrecomp, MIT) and DXC loaded from dxcompiler.dll beside

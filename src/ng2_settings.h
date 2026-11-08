@@ -209,6 +209,13 @@ struct Ng2Settings {
   // [IzunaRecomp] test44: every cutscene skippable with Cross / A (ng2_autoskip.h);
   // the key keeps its test43 name so saved settings carry over.
   bool skip_cutscenes_x = true;
+  // [IzunaRecomp] Android: on-screen touch controls (izuna_touch.h). Off - the
+  // game is meant for a controller; the hub's main menu turns them on, after
+  // asking whether the player is sure.
+  bool touch_controls = false;
+  // [IzunaRecomp] Android: the Vulkan driver package in use - "" the system's
+  // (izuna_gpu_driver.h). From the next start.
+  std::string gpu_driver;
   // [IzunaRecomp] test43: the swapchain's present mode on a PC - auto, fifo,
   // fifo_relaxed, mailbox, immediate (present_mode, vulkan_presenter.cpp).
   std::string pc_present_mode = "auto";
@@ -415,6 +422,8 @@ struct Ng2Settings {
         << "logging=" << (logging ? 1 : 0) << "\n"
         << "pc_refresh_switch=" << (pc_refresh_switch ? 1 : 0) << "\n"
         << "skip_cutscenes_x=" << (skip_cutscenes_x ? 1 : 0) << "\n"
+        << "touch_controls=" << (touch_controls ? 1 : 0) << "\n"
+        << "gpu_driver=" << gpu_driver << "\n"
         << "pc_present_mode=" << pc_present_mode << "\n"
         << "audio_delay_ms=" << audio_delay_ms << "\n"
         << "pc_defaults_version=" << pc_defaults_version << "\n"
@@ -527,6 +536,8 @@ struct Ng2Settings {
     else if (k == "logging") logging = Truthy(v);
     else if (k == "pc_refresh_switch") pc_refresh_switch = Truthy(v);
     else if (k == "skip_cutscenes_x") skip_cutscenes_x = Truthy(v);
+    else if (k == "touch_controls") touch_controls = Truthy(v);
+    else if (k == "gpu_driver") gpu_driver = v;
     else if (k == "audio_delay_ms") audio_delay_ms = std::clamp(std::atoi(v.c_str()), 0, 120);
     else if (k == "pc_present_mode") {
       if (v == "auto" || v == "fifo" || v == "fifo_relaxed" || v == "mailbox" || v == "immediate") pc_present_mode = v;

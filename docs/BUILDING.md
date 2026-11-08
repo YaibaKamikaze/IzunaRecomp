@@ -103,3 +103,26 @@ carries in `licenses/`. Unlike the PC builds, the PS5 app has the game's
 shaders built in (translated by `build_shaders.sh` from your copy, like the
 code): build output only, never committed. The packager refuses a package
 that contains any game file.
+
+## 6. The Android build
+
+Needs the Android NDK r27c, the SDK's platform 35 and build tools 35, and a JDK 17
+(`IZUNA_ANDROID_DEPS`, default `~/ng2-ps5-deps/android`, holds `jdk17/` and
+`sdk/` with `ndk/27.2.12479018`). Like the PS5, the app has the game's shaders
+built in (`tools/native/build_shaders.sh`, from your copy).
+
+```
+tools/android/build.sh                     # out/android/libmain.so (arm64-v8a, Snapdragon-tuned)
+tools/android/make_apk.sh                  # out/android-release/IzunaRecomp-<version>-android.apk
+```
+
+`make_apk.sh` needs no Gradle: aapt2, javac, d8, zipalign and apksigner from the
+build tools package `libmain.so`, libadrenotools' hook libraries, SDL's Java
+glue (from the SDK tree) and `tools/android/app`. The APK is signed with the
+key `IZUNA_KEYSTORE` names, made once if missing: an installed app only
+updates from an APK signed with the same key, so keep it (and never commit it).
+
+On Android the guest's physical memory is an AHardwareBuffer the GPU shares
+(`src/native/native_shared_memory.cpp`), and a Turnip driver package is loaded
+through libadrenotools (`third_party/libadrenotools`,
+`src/izuna/izuna_gpu_driver.cpp`).

@@ -34,6 +34,9 @@ struct HubContext {
   std::function<paths::GameDataStatus()> choose_game_folder;
 };
 
+// [IzunaRecomp] The main menu's bands: 7, and 8 on Android (TOUCH CONTROLS).
+constexpr int kHomeSlides = 8;
+
 class Hub {
  public:
   enum class Result { kNone, kStart, kQuit };
@@ -71,7 +74,7 @@ class Hub {
   Page page_ = Page::kHome;
   int home_sel_ = 0;
   float home_focus_ = -1;
-  float home_slide_[7] = {};  // each band's slide out (the focused one)
+  float home_slide_[kHomeSlides] = {};  // each band's slide out (the focused one); [IzunaRecomp] 8: Android adds TOUCH CONTROLS
   float wipe_ = 1;  // the slash across the focused item, 0 -> 1
   float page_in_ = 1;
   int tab_ = 0;

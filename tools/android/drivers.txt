@@ -1,0 +1,13 @@
+GPU driver packages (Android)
+=============================
+
+Put a Vulkan driver package here - the AdrenoTools kind: a .zip holding
+meta.json and the driver library, e.g. a Turnip (Mesa) build for Adreno - and
+start IzunaRecomp again. It is installed into the app, and shows up in
+Settings > Display > GPU driver; choose it there, then start the app again.
+
+Qualcomm's own driver cannot run the game's shaders (they need 64-bit
+integers), so a Turnip driver is what makes the game draw. If a driver keeps
+the game from starting, the next start uses the system's driver and says so.
+
+Keep the .zip here: replacing it with a newer one installs the newer one.

@@ -88,9 +88,53 @@ void ExitNow(int code) {
 #include <unistd.h>
 
 #include <SDL3/SDL_video.h>
+#if defined(__ANDROID__)
+#include <jni.h>
+#include <SDL3/SDL_system.h>
+#endif
 
 namespace ng2 {
 
+#if defined(__ANDROID__)
+// [IzunaRecomp] Android: the same as the Linux desktop for the displays (SDL),
+// but the folder picker and the relaunch are the app's activity's
+// (IzunaActivity.java, called through JNI from the game's thread).
+namespace {
+// Calls a String(String) or boolean() method of the activity.
+std::optional<std::string> ActivityString(const char* method, const std::string& arg) {
+  auto* env = static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
+  auto activity = static_cast<jobject>(SDL_GetAndroidActivity());
+  if (!env || !activity) return std::nullopt;
+  std::optional<std::string> out;
+  jclass cls = env->GetObjectClass(activity);
+  jmethodID id = env->GetMethodID(cls, method, "(Ljava/lang/String;)Ljava/lang/String;");
+  if (id) {
+    jstring jarg = env->NewStringUTF(arg.c_str());
+    auto result = static_cast<jstring>(env->CallObjectMethod(activity, id, jarg));
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    if (result) {
+      const char* chars = env->GetStringUTFChars(result, nullptr);
+      if (chars && *chars) out = std::string(chars);
+      if (chars) env->ReleaseStringUTFChars(result, chars);
+      env->DeleteLocalRef(result);
+    }
+    env->DeleteLocalRef(jarg);
+  } else if (env->ExceptionCheck()) {
+    env->ExceptionClear();
+  }
+  env->DeleteLocalRef(cls);
+  env->DeleteLocalRef(activity);
+  return out;
+}
+}  // namespace
+
+std::optional<std::filesystem::path> PickFolder(const std::string& title, const std::filesystem::path&) {
+  // Android's own folder picker; the activity turns its answer into a path
+  // (/storage/emulated/0/...) - readable as files with "All files access".
+  if (auto path = ActivityString("pickGameFolder", title)) return std::filesystem::path(*path);
+  return std::nullopt;
+}
+#else
 std::optional<std::filesystem::path> PickFolder(const std::string& title, const std::filesystem::path& start) {
   auto run = [](const std::string& command) -> std::optional<std::filesystem::path> {
     FILE* p = popen(command.c_str(), "r");
@@ -117,6 +161,7 @@ std::optional<std::filesystem::path> PickFolder(const std::string& title, const 
   }
   return run("kdialog --getexistingdirectory " + quoted(from) + " --title " + quoted(title) + " 2>/dev/null");
 }
+#endif  // __ANDROID__
 
 bool ThisProcessIsForeground() { return true; }
 
@@ -164,6 +209,13 @@ bool MonitorWorkArea(int index, int& width, int& height, float& scale) {
   return true;
 }
 
+#if defined(__ANDROID__)
+bool LaunchDetached(const std::filesystem::path&, const std::string& args) {
+  // The activity starts the app again from a separate process once this one
+  // has gone (IzunaRestartActivity); the arguments go along as its extras.
+  return ActivityString("restartApp", args).has_value();
+}
+#else
 bool LaunchDetached(const std::filesystem::path& exe, const std::string& args) {
   // (from an AppImage: the AppImage file itself - its mount goes when this
   // process does, so the binary inside it must not be run directly)
@@ -186,6 +238,7 @@ bool LaunchDetached(const std::filesystem::path& exe, const std::string& args) {
   }
   return true;
 }
+#endif  // __ANDROID__
 
 void ExitNow(int code) {
   std::fflush(nullptr);

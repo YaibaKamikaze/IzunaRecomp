@@ -990,7 +990,11 @@ const ShaderInfo* ShaderByHash(uint64_t hash, bool* missing) {
       VkShaderModuleCreateInfo ci = {VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
       ci.codeSize = code.size() * 4;
       ci.pCode = code.data();
-      if (g.vk.CreateShaderModule(g.ctx.device, &ci, nullptr, &info.module) != VK_SUCCESS) info.module = VK_NULL_HANDLE;
+      if (const VkResult r = g.vk.CreateShaderModule(g.ctx.device, &ci, nullptr, &info.module); r != VK_SUCCESS) {
+        info.module = VK_NULL_HANDLE;
+        static std::atomic<int> logged{0};  // [IzunaRecomp] (Adreno: which shaders a driver refuses, and why)
+        if (logged.fetch_add(1) < 20) REXLOG_WARN("[native] shader {:016X}: module refused ({})", e->hash, int(r));
+      }
     } else {
       REXLOG_WARN("[native] shader {:016X} did not decode (smol-v)", e->hash);
     }
@@ -1970,10 +1974,16 @@ bool DrawInit(const DrawContext& context) {
     VkShaderModuleCreateInfo ci = {VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
     ci.codeSize = sizeof(kRectListGs);
     ci.pCode = kRectListGs;
-    if (g.vk.CreateShaderModule(g.ctx.device, &ci, nullptr, &g.rect_gs) != VK_SUCCESS) g.rect_gs = VK_NULL_HANDLE;
+    if (const VkResult r = g.vk.CreateShaderModule(g.ctx.device, &ci, nullptr, &g.rect_gs); r != VK_SUCCESS) {
+      g.rect_gs = VK_NULL_HANDLE;
+      REXLOG_WARN("[native] the rect-list geometry shader was refused ({})", int(r));
+    }
     ci.codeSize = sizeof(kDepth24Fs);
     ci.pCode = kDepth24Fs;
-    if (g.vk.CreateShaderModule(g.ctx.device, &ci, nullptr, &g.depth24_fs) != VK_SUCCESS) g.depth24_fs = VK_NULL_HANDLE;
+    if (const VkResult r = g.vk.CreateShaderModule(g.ctx.device, &ci, nullptr, &g.depth24_fs); r != VK_SUCCESS) {
+      g.depth24_fs = VK_NULL_HANDLE;
+      REXLOG_WARN("[native] the 20e4 depth shader was refused ({})", int(r));
+    }
   }
   if (!CreateLayout() || !CreateUpload()) {
     REXLOG_ERROR("[native] drawing off: could not create the pipeline layout or upload buffer");

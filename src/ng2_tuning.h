@@ -117,8 +117,10 @@ struct Ng2Tuning {
     out.push_back({"native_vblank_hz", s.pc_vsync == 2 ? "59.94" : s.pc_vsync == 1 ? "60" : "0",
                    "[IzunaRecomp] V-Sync: the guest vblank's own rate"});
     out.push_back({"present_mode", s.pc_present_mode, "[IzunaRecomp] the swapchain's present mode (Display)"});
+#if defined(_WIN32)  // (pc_display_clock.cpp: Windows only)
     out.push_back({"izuna_fullscreen_refresh_switch", s.pc_refresh_switch ? "true" : "false",
                    "[IzunaRecomp] fullscreen: a refresh rate 60 divides on a fixed 144-170 Hz screen"});
+#endif
     out.push_back({"present_low_latency", s.pc_low_latency ? "true" : "false",
                    "[IzunaRecomp] Input latency Low: one picture queued for the screen (present wait)"});
     {

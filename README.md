@@ -2,11 +2,11 @@
 
 > [!WARNING]
 > **Played [NG2Recomp](https://github.com/gamboozino/ng2recomp) with the same game files?** Your game folder may now have a
-> file called **`default.xexp`** next to `default.xex`. IzunaRecomp applies a `default.xexp` it finds as a title update,
-> and that may stop the game from launching. Move `default.xexp` out of the game folder (on PS5:
-> `PPSA94203/Game Data/`) before starting IzunaRecomp; put it back if NG2Recomp needs it.
+> file called **`default.xexp`** next to `default.xex`. Since v0.2.2 the Windows, Linux and Android builds ignore it.
+> The PS5 build (still v0.2.1) applies it as a title update, which may stop the game from launching there: move
+> `default.xexp` out of `PPSA94203/Game Data/`; put it back if NG2Recomp needs it.
 
-## v0.2.1 adds a Linux AppImage (Steam Deck included), a PS5 build, smoother starts and accuracy fixes.
+## v0.2.2 adds an Android build (Snapdragon, with Turnip drivers — its performance is poor for now), a Linux build that draws on AMD and Intel GPUs (the Steam Deck included), and fixes for Windows.
 ## This got released with the purpose of people playing around with it and seeing what can be improved, so if you have an issue with it please talk about it and send your logs, this will help the project. I am but one person using the water eating slop machine to develop this and don't have all the hardware possible to test it, I've only used a 4060 and an AMD CPU to try it so far, so reports from AMD and Intel Arc GPUs are especially welcome.
 
 
@@ -14,9 +14,9 @@
 
 
 A static recompilation of **Ninja Gaiden II** (Xbox 360, title `544307D5`) for
-Windows, Linux and the PS5, drawn natively by the **Kasumi Renderer** (Vulkan).
+Windows, Linux, Android and the PS5, drawn natively by the **Kasumi Renderer** (Vulkan).
 
-The game's PowerPC code is translated ahead of time into native x86-64, and
+The game's PowerPC code is translated ahead of time into native x86-64 (ARM64 on Android), and
 its Direct3D calls are answered by the Kasumi Renderer, which draws every frame
 itself through Vulkan from the game's own shaders, recompiled for your GPU.
 There is no emulator in it: no GPU emulation, no interpreter, no JIT.
@@ -45,7 +45,7 @@ own copy.
 | | What | |
 |---|---|---|
 | **1** | **Your own copy of Ninja Gaiden II for Xbox 360**, extracted to a folder containing `default.xex` | Nothing works without it. |
-| **2** | **Windows 10 or 11, 64-bit**, or **Linux** from 2022 on, any desktop (SteamOS, Bazzite, Ubuntu 22.04+, Debian 12+, Fedora 36+, Mint 21+, Arch…), or **a PS5 that runs homebrew apps** (a jailbroken console with a homebrew launcher) | |
+| **2** | **Windows 10 or 11, 64-bit**, or **Linux** from 2022 on, any desktop (SteamOS, Bazzite, Ubuntu 22.04+, Debian 12+, Fedora 36+, Mint 21+, Arch…), or **Android 11+** on a Snapdragon (Adreno) device with a Turnip driver (see below), or **a PS5 that runs homebrew apps** (a jailbroken console with a homebrew launcher) | |
 | **3** | On a PC, **a GPU with Vulkan** — NVIDIA GTX 900 / AMD RX 400 / Intel Arc or newer, with an up-to-date driver | |
 
 Nothing else needs installing (no Visual C++ Redistributable).
@@ -57,7 +57,27 @@ it executable (`chmod +x`) and run it — on a Steam Deck, add it to Steam as a
 non-Steam game and run it as it is, without Proton. Settings, logs and mods
 live in `~/.local/share/IzunaRecomp`. The rest of this section is the same.
 
-**PS5:** download `IzunaRecomp-<version>-ps5.zip` and unzip it: you get a
+**Android:** download `IzunaRecomp-<version>-android.apk` and install it.
+
+> [!WARNING]
+> **The Android build is early: performance is poor at the moment** and still has to be optimised. It is
+> made for Snapdragon devices (tested on an AYN Thor, Snapdragon 8 Gen 2).
+
+1. Start IzunaRecomp and allow **All files access** when it asks: the game reads your copy of
+   Ninja Gaiden II from the device's storage. Its own folder is **`IzunaRecomp`** at the top of the
+   storage (settings, logs, mods, DLC, saves to import, drivers).
+2. **A Turnip driver is needed.** Qualcomm's own driver cannot run the game's shaders (they use 64-bit
+   integers) — the game stays black and IzunaRecomp says so. Put a Turnip driver package (the AdrenoTools
+   kind, a `.zip` — e.g. [Balemuni's Aurora](https://github.com/Balemuni/Balemunis-Aurora/releases)
+   "Universal" or [Purple Turnip](https://github.com/MrPurple666/purple-turnip/releases)) in
+   **`IzunaRecomp/drivers/`**, start the app again, choose it in **Settings › Display › GPU driver**, and
+   start the app once more. A driver that keeps the game from starting is replaced by the system's at the
+   next start.
+3. Copy your extracted game anywhere on the device or its SD card and choose that folder in the hub,
+   then **START GAME**. A controller is the way to play; **TOUCH CONTROLS** in the hub's main menu turns
+   on-screen controls on, if you really want them.
+
+**PS5:** download the PS5 zip (v0.2.2 carries the unchanged `IzunaRecomp-0.2.1-ps5.zip`) and unzip it: you get a
 folder named **`PPSA94203`**.
 
 1. Copy your extracted game (`default.xex`, every `.ng2` archive, the videos
@@ -93,6 +113,9 @@ the release has the controls and the settings in detail.
 
 ## What's in it
 
+- **Android** (new, early) — the whole game natively on ARM64, for Snapdragon devices, with Turnip
+  drivers chosen in the hub, the game's shaders built in, a controller or (if you insist) touch controls.
+  Performance is poor for now.
 - **The Kasumi Renderer** — native Vulkan rendering of the whole game, with
   the game's shaders recompiled from your copy at first start; any resolution
   (Auto: your screen's, or 720p to 2160p, each drawn at that true resolution),
@@ -132,6 +155,9 @@ the release has the controls and the settings in detail.
 - There's occasional hitches and stutters, these will be improved upon.
 - The Windows build cannot draw under Proton / Wine (its renderer cannot use
   the game's memory there): on Linux and the Steam Deck use the AppImage.
+- **Android: performance is poor at the moment** — the build runs, but not well yet; it needs
+  optimising. It also needs a Turnip driver (Qualcomm's own cannot run the game's shaders), and its
+  touch controls are basic (moving and resizing them is still to come).
 - The PS5 build is newer than the PC ones and less tested: report anything
   odd with the newest log from `/data/homebrew/PPSA94203/logs/`.
 
@@ -144,8 +170,9 @@ See [docs/BUILDING.md](docs/BUILDING.md). In short: the ReXGlue SDK is fetched
 and patched by `tools/setup_sdk.sh`, the game's code is recompiled from **your
 own** `default.xex` (never committed — `generated/` is reproducible from it),
 the Windows build is cross-compiled from Linux with Clang against the
-headers and libraries of your own Build Tools for Visual Studio, and the PS5
-build uses the ps5-plume-triangle toolchain.
+headers and libraries of your own Build Tools for Visual Studio, the Linux
+build against an Ubuntu 22.04 sysroot, the Android build with the NDK, and the
+PS5 build with the ps5-plume-triangle toolchain.
 
 ## Credits
 
@@ -161,6 +188,12 @@ build uses the ps5-plume-triangle toolchain.
   and elripalda's PS5 runtime; and on
   [Ninja's Dawn PS5](https://github.com/YaibaKamikaze/ninjas-dawn-ps5), the
   port it grew from.
+- **The Android build** loads Turnip drivers with
+  [libadrenotools](https://github.com/bylaws/libadrenotools) by Billy Laws (BSD-2-Clause); its driver
+  loading follows [EternalSonataReprise](https://github.com/birabittoh/EternalSonataReprise) by Marco
+  Andronaco (MIT), and the SDK's Android support comes from elripalda's SmackDown vs Raw 2011 port. The
+  Turnip drivers are Mesa's, built by their authors (Balemuni, MrPurple and others); none ships with
+  IzunaRecomp.
 - **[ng2recomp](https://github.com/gamboozino/ng2recomp)** by gamboozino —
   another Ninja Gaiden II recompilation, whose published research into the
   game's rendering (the Xenos multiply rule, predicate and control-flow

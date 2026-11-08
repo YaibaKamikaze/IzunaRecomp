@@ -74,8 +74,15 @@ if [[ ! -x "$tool" ]]; then
   curl -sSL -o "$tool" https://github.com/AppImage/appimagetool/releases/download/1.9.0/appimagetool-x86_64.AppImage
   chmod +x "$tool"
 fi
+# The AppImage runtime (the program at the start of every AppImage), pinned and
+# kept: appimagetool otherwise downloads the latest one on every run (and a
+# GitHub hiccup then fails the build - v0.2.2's first try).
+runtime="${APPIMAGE_RUNTIME:-$HOME/ng2-ps5-deps/tools/appimage-runtime-x86_64-20251108}"
+if [[ ! -f "$runtime" ]]; then
+  curl -fsSL --retry 5 -o "$runtime" https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-x86_64
+fi
 out="$dest/IzunaRecomp-$version-x86_64.AppImage"
 rm -f "$out"
-ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 "$tool" --no-appstream "$app" "$out" >/dev/null
+ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 "$tool" --no-appstream --runtime-file "$runtime" "$app" "$out" >/dev/null
 (cd "$dest" && sha256sum "$(basename "$out")" > "$(basename "$out").sha256")
 echo "$out ($(du -h "$out" | cut -f1))"
