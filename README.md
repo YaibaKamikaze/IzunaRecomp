@@ -45,7 +45,7 @@ own copy.
 | | What | |
 |---|---|---|
 | **1** | **Your own copy of Ninja Gaiden II for Xbox 360**, extracted to a folder containing `default.xex` | Nothing works without it. |
-| **2** | **Windows 10 or 11, 64-bit**, or **Linux** with glibc 2.38+ (SteamOS, Ubuntu 24.04+, Fedora 40+, Arch…), or **a PS5 that runs homebrew apps** (a jailbroken console with a homebrew launcher) | |
+| **2** | **Windows 10 or 11, 64-bit**, or **Linux** from 2022 on, any desktop (SteamOS, Bazzite, Ubuntu 22.04+, Debian 12+, Fedora 36+, Mint 21+, Arch…), or **a PS5 that runs homebrew apps** (a jailbroken console with a homebrew launcher) | |
 | **3** | On a PC, **a GPU with Vulkan** — NVIDIA GTX 900 / AMD RX 400 / Intel Arc or newer, with an up-to-date driver | |
 
 Nothing else needs installing (no Visual C++ Redistributable).

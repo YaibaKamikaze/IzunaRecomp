@@ -128,231 +128,6 @@ index 42cdddb2..ab15a9e0 100644
    }
  }
  #endif
-diff --git a/include/rex/audio/host_stall.h b/include/rex/audio/host_stall.h
-new file mode 100644
-index 00000000..71b535a8
---- /dev/null
-+++ b/include/rex/audio/host_stall.h
-@@ -0,0 +1,44 @@
-+/**
-+ * [ng2 ps5 port] "The host is holding up the game": set while one of the
-+ * game's threads is blocked in host code (the native renderer waiting for its
-+ * worker or the GPU). The game's audio thread runs on regardless, so a long
-+ * host stall left the sound ahead of the picture (test29: 5 s freezes, the
-+ * audio kept going); while a stall has lasted audio_follow_game_ms, the PS5
-+ * audio output grants the game no more audio and plays silence, so sound and
-+ * picture stop - and resume - together. Only host stalls count: holding the
-+ * audio whenever the game is slow could deadlock a game that waits on its
-+ * own sound.
-+ */
-+#pragma once
-+
-+#include <atomic>
-+#include <chrono>
-+#include <cstdint>
-+
-+namespace rex::audio {
-+
-+inline std::atomic<int64_t> host_stall_since_ns{0};  // steady_clock; 0 = no stall
-+
-+inline int64_t HostStallNow() {
-+  return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch())
-+      .count();
-+}
-+
-+// Marks a host stall for its lifetime (the outermost scope only).
-+class HostStallScope {
-+ public:
-+  HostStallScope() {
-+    int64_t none = 0;
-+    mine_ = host_stall_since_ns.compare_exchange_strong(none, HostStallNow(), std::memory_order_relaxed);
-+  }
-+  ~HostStallScope() {
-+    if (mine_) host_stall_since_ns.store(0, std::memory_order_relaxed);
-+  }
-+  HostStallScope(const HostStallScope&) = delete;
-+  HostStallScope& operator=(const HostStallScope&) = delete;
-+
-+ private:
-+  bool mine_ = false;
-+};
-+
-+}  // namespace rex::audio
-diff --git a/include/rex/audio/output_stage.h b/include/rex/audio/output_stage.h
-new file mode 100644
-index 00000000..e65b54c3
---- /dev/null
-+++ b/include/rex/audio/output_stage.h
-@@ -0,0 +1,169 @@
-+/**
-+ * [IzunaRecomp] The last stage before the speakers, shared by the SDL (PC)
-+ * and PS5 audio drivers:
-+ *
-+ *  - Limiter: a look-ahead peak limiter in place of the hard clip at full
-+ *    scale. The game's 5.1 mix folded to stereo (and loud fights on any
-+ *    layout) adds up past 1.0; clamping each sample there squares the wave
-+ *    off - harsh, crackling distortion on exactly the loudest moments. The
-+ *    limiter turns the whole signal down just enough, just in time (it sees
-+ *    1 ms ahead), and lets it back up over a fraction of a second, so peaks
-+ *    stay clean and quiet passages are untouched.
-+ *
-+ *  - Sinc: a windowed-sinc interpolator for the PS5 driver's rate matching
-+ *    (playback a hair faster or slower than 1x). Linear interpolation there
-+ *    averaged neighbouring samples whenever the read position fell between
-+ *    them - a treble cut of up to 3 dB at 12 kHz that came and went as the
-+ *    position drifted. 16 taps keep the top end flat to ~20 kHz.
-+ *
-+ *  - Dither: triangular noise of one 16-bit step before rounding to 16 bits
-+ *    (the PS5's output format), so fades and reverb tails decay smoothly
-+ *    instead of turning gritty in the last few bits.
-+ */
-+#pragma once
-+
-+#include <algorithm>
-+#include <array>
-+#include <cmath>
-+#include <cstddef>
-+#include <cstdint>
-+#include <vector>
-+
-+namespace rex::audio {
-+
-+class Limiter {
-+ public:
-+  static constexpr int kLookahead = 48;   // samples (1 ms at 48 kHz): the delay it adds
-+  static constexpr float kCeiling = 0.95f;  // (headroom for a resampler's ringing after it)
-+
-+  explicit Limiter(int channels = 2, float rate = 48000.0f) { Reset(channels, rate); }
-+
-+  void Reset(int channels, float rate = 48000.0f) {
-+    ch_ = std::max(1, channels);
-+    delay_.assign(size_t(kLookahead + 1) * size_t(ch_), 0.0f);
-+    need_.fill(1.0f);
-+    pos_ = 0;
-+    gain_ = 1.0f;
-+    // Down within the look-ahead (a time constant of a quarter of it), back
-+    // up with a 150 ms one: fast enough not to hold a quiet passage down,
-+    // slow enough not to flutter on a bass note.
-+    attack_ = 1.0f - std::exp(-4.0f / float(kLookahead));
-+    release_ = 1.0f - std::exp(-1.0f / (0.15f * rate));
-+  }
-+
-+  int channels() const { return ch_; }
-+  float gain() const { return gain_; }
-+
-+  // In place, `frames` interleaved frames of channels() samples.
-+  void Process(float* data, size_t frames) {
-+    constexpr int kRing = kLookahead + 1;
-+    for (size_t n = 0; n < frames; ++n) {
-+      float* x = data + n * size_t(ch_);
-+      float peak = 0.0f;
-+      for (int c = 0; c < ch_; ++c) peak = std::max(peak, std::fabs(x[c]));
-+      if (!(peak == peak)) peak = 0.0f;  // (a NaN from the game: silence, not a stuck limiter)
-+      need_[size_t(pos_)] = peak > kCeiling ? kCeiling / peak : 1.0f;
-+      float* slot = &delay_[size_t(pos_) * size_t(ch_)];
-+      for (int c = 0; c < ch_; ++c) {
-+        const float in = x[c] == x[c] ? x[c] : 0.0f;
-+        // The oldest sample out, the newest in (the ring's next slot is the oldest).
-+        const int oldest = (pos_ + 1) % kRing;
-+        x[c] = delay_[size_t(oldest) * size_t(ch_) + size_t(c)];
-+        slot[c] = in;
-+      }
-+      // The gain the next kLookahead samples need, reached before they play.
-+      float m = 1.0f;
-+      for (int k = 0; k < kRing; ++k) m = std::min(m, need_[size_t(k)]);
-+      gain_ += (m - gain_) * (m < gain_ ? attack_ : release_);
-+      for (int c = 0; c < ch_; ++c) x[c] = std::clamp(x[c] * gain_, -1.0f, 1.0f);  // (the residue of the attack)
-+      pos_ = (pos_ + 1) % kRing;
-+    }
-+  }
-+
-+ private:
-+  int ch_ = 2;
-+  std::vector<float> delay_;
-+  std::array<float, kLookahead + 1> need_{};
-+  int pos_ = 0;
-+  float gain_ = 1.0f, attack_ = 0.0f, release_ = 0.0f;
-+};
-+
-+// 16-tap windowed sinc (Kaiser, beta 7.5), 512 phases, linear between phases.
-+// Cutoff at 0.94 of the input's Nyquist frequency, which also covers playback
-+// up to ~1.05x without aliasing.
-+class Sinc {
-+ public:
-+  static constexpr int kTaps = 16;
-+  static constexpr int kHalf = kTaps / 2;  // taps before the point: kHalf - 1 = 7 history samples
-+  static constexpr int kPhases = 512;
-+
-+  static const Sinc& Get() {
-+    static const Sinc table;
-+    return table;
-+  }
-+
-+  // The value at x[0] + frac (0 <= frac < 1) from x[-(kHalf-1)] .. x[kHalf],
-+  // `stride` floats apart (interleaved channels).
-+  float At(const float* x, size_t stride, float frac) const {
-+    const float fp = frac * float(kPhases);
-+    const int p = std::min(int(fp), kPhases - 1);
-+    const float t = fp - float(p);
-+    const float* a = h_[size_t(p)].data();
-+    const float* b = h_[size_t(p + 1)].data();
-+    float sum = 0.0f;
-+    for (int j = 0; j < kTaps; ++j) {
-+      const float w = a[j] + (b[j] - a[j]) * t;
-+      sum += w * x[std::ptrdiff_t(j - (kHalf - 1)) * std::ptrdiff_t(stride)];
-+    }
-+    return sum;
-+  }
-+
-+ private:
-+  Sinc() {
-+    constexpr double kPi = 3.14159265358979323846, kBeta = 7.5, kCutoff = 0.94;
-+    auto bessel_i0 = [](double v) {
-+      double sum = 1.0, term = 1.0;
-+      for (int k = 1; k < 32; ++k) {
-+        term *= (v / (2.0 * k)) * (v / (2.0 * k));
-+        sum += term;
-+      }
-+      return sum;
-+    };
-+    const double i0b = bessel_i0(kBeta);
-+    for (int p = 0; p <= kPhases; ++p) {
-+      const double frac = double(p) / kPhases;
-+      double total = 0.0;
-+      std::array<double, kTaps> w{};
-+      for (int j = 0; j < kTaps; ++j) {
-+        const double d = double(j - (kHalf - 1)) - frac;  // distance from the point
-+        const double xs = kCutoff * d;
-+        const double sinc = std::fabs(xs) < 1e-9 ? 1.0 : std::sin(kPi * xs) / (kPi * xs);
-+        const double r = d / double(kHalf);
-+        const double win = std::fabs(r) >= 1.0 ? 0.0 : bessel_i0(kBeta * std::sqrt(1.0 - r * r)) / i0b;
-+        w[size_t(j)] = sinc * win;
-+        total += w[size_t(j)];
-+      }
-+      for (int j = 0; j < kTaps; ++j) h_[size_t(p)][size_t(j)] = float(w[size_t(j)] / total);  // (unity at DC)
-+    }
-+  }
-+  std::array<std::array<float, kTaps>, kPhases + 1> h_{};
-+};
-+
-+// Float (-1..1) to 16 bits with triangular dither of one step.
-+class Dither16 {
-+ public:
-+  int16_t operator()(float v) {
-+    const float noise = (Next() + Next() - 1.0f);  // (-1, 1), triangular
-+    const float s = std::clamp(v, -1.0f, 1.0f) * 32767.0f + noise;
-+    return int16_t(std::clamp(std::lround(s), -32768L, 32767L));
-+  }
-+
-+ private:
-+  float Next() {
-+    state_ = state_ * 1664525u + 1013904223u;
-+    return float(state_ >> 8) * (1.0f / 16777216.0f);
-+  }
-+  uint32_t state_ = 0x1234567u;
-+};
-+
-+}  // namespace rex::audio
 diff --git a/include/rex/audio/ps5/ps5_audio_driver.h b/include/rex/audio/ps5/ps5_audio_driver.h
 index 1d956373..27d046eb 100644
 --- a/include/rex/audio/ps5/ps5_audio_driver.h
@@ -397,6 +172,20 @@ index f8949cae..44d72ed3 100644
  };
  
  }  // namespace rex::audio::sdl
+diff --git a/include/rex/chrono/chrono.h b/include/rex/chrono/chrono.h
+index 87fbaaed..10f42825 100644
+--- a/include/rex/chrono/chrono.h
++++ b/include/rex/chrono/chrono.h
+@@ -116,7 +116,8 @@ using XSystemClock = detail::NtSystemClock<detail::Domain::Guest>;
+ 
+ namespace std::chrono {
+ 
+-#if defined(__APPLE__) || defined(__ANDROID__) || (defined(_LIBCPP_VERSION) && _LIBCPP_VERSION < 200000)  // [ps5 port] any older libc++
++#if defined(__APPLE__) || defined(__ANDROID__) || (defined(_LIBCPP_VERSION) && _LIBCPP_VERSION < 200000) || \
++    (defined(__GLIBCXX__) && __cpp_lib_chrono < 201907L)  // [ps5 port] any older libc++; [IzunaRecomp] GCC 12's libstdc++ (the Linux build's Ubuntu 22.04 sysroot)
+ // Apple libc++ does not expose clock_time_conversion or clock_cast.
+ template <class, class>
+ struct clock_time_conversion {};
 diff --git a/include/rex/codegen/config.h b/include/rex/codegen/config.h
 index 8200139a..0f8d086f 100644
 --- a/include/rex/codegen/config.h
@@ -6094,7 +5883,7 @@ index 5a957b54..980c41dc 100644
      REXSYS_ERROR("GPU plugin '{}': only the built-in xenos plugin exists on the PS5", name);
      return nullptr;
 diff --git a/src/system/user_module.cpp b/src/system/user_module.cpp
-index 171546fb..16ca9b52 100644
+index 171546fb..625f0087 100644
 --- a/src/system/user_module.cpp
 +++ b/src/system/user_module.cpp
 @@ -63,13 +63,16 @@ X_STATUS UserModule::LoadFromFile(const std::string_view path) {
@@ -6135,7 +5924,7 @@ index 171546fb..16ca9b52 100644
        return result;
      }
  
-@@ -99,6 +105,10 @@ X_STATUS UserModule::LoadFromFile(const std::string_view path) {
+@@ -99,11 +105,24 @@ X_STATUS UserModule::LoadFromFile(const std::string_view path) {
  
    // Only XEX returns X_STATUS_PENDING
    if (result != X_STATUS_PENDING) {
@@ -6145,6 +5934,20 @@ index 171546fb..16ca9b52 100644
 +    }
      return result;
    }
+ 
+   // Search for sibling XEX patch file
++  // [IzunaRecomp] Never applied: the game's code was recompiled from the
++  // original default.xex, and a title update patched over it (another
++  // recompilation can leave a default.xexp in the game folder) stops the game
++  // from loading or no longer matches that code. Found, it is logged and left.
+   auto patch_entry = kernel_state_->file_system()->ResolvePath(path_ + "p");
++  if (patch_entry) {
++    REXSYS_WARN("{}p is in the game folder: ignored - IzunaRecomp runs the original game, not a title update",
++                path_);
++    patch_entry = nullptr;
++  }
+   if (patch_entry) {
+     auto patch_path = patch_entry->absolute_path();
  
 diff --git a/src/system/util/object_table.cpp b/src/system/util/object_table.cpp
 index 6fbabd2c..f102b765 100644
@@ -7644,3 +7447,228 @@ index 4f7b3948..b9414557 100644
      _exit(0);
    };
    std::set_terminate(Ps5Terminate);
+diff --git a/include/rex/audio/host_stall.h b/include/rex/audio/host_stall.h
+new file mode 100644
+index 00000000..71b535a8
+--- /dev/null
++++ b/include/rex/audio/host_stall.h
+@@ -0,0 +1,44 @@
++/**
++ * [ng2 ps5 port] "The host is holding up the game": set while one of the
++ * game's threads is blocked in host code (the native renderer waiting for its
++ * worker or the GPU). The game's audio thread runs on regardless, so a long
++ * host stall left the sound ahead of the picture (test29: 5 s freezes, the
++ * audio kept going); while a stall has lasted audio_follow_game_ms, the PS5
++ * audio output grants the game no more audio and plays silence, so sound and
++ * picture stop - and resume - together. Only host stalls count: holding the
++ * audio whenever the game is slow could deadlock a game that waits on its
++ * own sound.
++ */
++#pragma once
++
++#include <atomic>
++#include <chrono>
++#include <cstdint>
++
++namespace rex::audio {
++
++inline std::atomic<int64_t> host_stall_since_ns{0};  // steady_clock; 0 = no stall
++
++inline int64_t HostStallNow() {
++  return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch())
++      .count();
++}
++
++// Marks a host stall for its lifetime (the outermost scope only).
++class HostStallScope {
++ public:
++  HostStallScope() {
++    int64_t none = 0;
++    mine_ = host_stall_since_ns.compare_exchange_strong(none, HostStallNow(), std::memory_order_relaxed);
++  }
++  ~HostStallScope() {
++    if (mine_) host_stall_since_ns.store(0, std::memory_order_relaxed);
++  }
++  HostStallScope(const HostStallScope&) = delete;
++  HostStallScope& operator=(const HostStallScope&) = delete;
++
++ private:
++  bool mine_ = false;
++};
++
++}  // namespace rex::audio
+diff --git a/include/rex/audio/output_stage.h b/include/rex/audio/output_stage.h
+new file mode 100644
+index 00000000..e65b54c3
+--- /dev/null
++++ b/include/rex/audio/output_stage.h
+@@ -0,0 +1,169 @@
++/**
++ * [IzunaRecomp] The last stage before the speakers, shared by the SDL (PC)
++ * and PS5 audio drivers:
++ *
++ *  - Limiter: a look-ahead peak limiter in place of the hard clip at full
++ *    scale. The game's 5.1 mix folded to stereo (and loud fights on any
++ *    layout) adds up past 1.0; clamping each sample there squares the wave
++ *    off - harsh, crackling distortion on exactly the loudest moments. The
++ *    limiter turns the whole signal down just enough, just in time (it sees
++ *    1 ms ahead), and lets it back up over a fraction of a second, so peaks
++ *    stay clean and quiet passages are untouched.
++ *
++ *  - Sinc: a windowed-sinc interpolator for the PS5 driver's rate matching
++ *    (playback a hair faster or slower than 1x). Linear interpolation there
++ *    averaged neighbouring samples whenever the read position fell between
++ *    them - a treble cut of up to 3 dB at 12 kHz that came and went as the
++ *    position drifted. 16 taps keep the top end flat to ~20 kHz.
++ *
++ *  - Dither: triangular noise of one 16-bit step before rounding to 16 bits
++ *    (the PS5's output format), so fades and reverb tails decay smoothly
++ *    instead of turning gritty in the last few bits.
++ */
++#pragma once
++
++#include <algorithm>
++#include <array>
++#include <cmath>
++#include <cstddef>
++#include <cstdint>
++#include <vector>
++
++namespace rex::audio {
++
++class Limiter {
++ public:
++  static constexpr int kLookahead = 48;   // samples (1 ms at 48 kHz): the delay it adds
++  static constexpr float kCeiling = 0.95f;  // (headroom for a resampler's ringing after it)
++
++  explicit Limiter(int channels = 2, float rate = 48000.0f) { Reset(channels, rate); }
++
++  void Reset(int channels, float rate = 48000.0f) {
++    ch_ = std::max(1, channels);
++    delay_.assign(size_t(kLookahead + 1) * size_t(ch_), 0.0f);
++    need_.fill(1.0f);
++    pos_ = 0;
++    gain_ = 1.0f;
++    // Down within the look-ahead (a time constant of a quarter of it), back
++    // up with a 150 ms one: fast enough not to hold a quiet passage down,
++    // slow enough not to flutter on a bass note.
++    attack_ = 1.0f - std::exp(-4.0f / float(kLookahead));
++    release_ = 1.0f - std::exp(-1.0f / (0.15f * rate));
++  }
++
++  int channels() const { return ch_; }
++  float gain() const { return gain_; }
++
++  // In place, `frames` interleaved frames of channels() samples.
++  void Process(float* data, size_t frames) {
++    constexpr int kRing = kLookahead + 1;
++    for (size_t n = 0; n < frames; ++n) {
++      float* x = data + n * size_t(ch_);
++      float peak = 0.0f;
++      for (int c = 0; c < ch_; ++c) peak = std::max(peak, std::fabs(x[c]));
++      if (!(peak == peak)) peak = 0.0f;  // (a NaN from the game: silence, not a stuck limiter)
++      need_[size_t(pos_)] = peak > kCeiling ? kCeiling / peak : 1.0f;
++      float* slot = &delay_[size_t(pos_) * size_t(ch_)];
++      for (int c = 0; c < ch_; ++c) {
++        const float in = x[c] == x[c] ? x[c] : 0.0f;
++        // The oldest sample out, the newest in (the ring's next slot is the oldest).
++        const int oldest = (pos_ + 1) % kRing;
++        x[c] = delay_[size_t(oldest) * size_t(ch_) + size_t(c)];
++        slot[c] = in;
++      }
++      // The gain the next kLookahead samples need, reached before they play.
++      float m = 1.0f;
++      for (int k = 0; k < kRing; ++k) m = std::min(m, need_[size_t(k)]);
++      gain_ += (m - gain_) * (m < gain_ ? attack_ : release_);
++      for (int c = 0; c < ch_; ++c) x[c] = std::clamp(x[c] * gain_, -1.0f, 1.0f);  // (the residue of the attack)
++      pos_ = (pos_ + 1) % kRing;
++    }
++  }
++
++ private:
++  int ch_ = 2;
++  std::vector<float> delay_;
++  std::array<float, kLookahead + 1> need_{};
++  int pos_ = 0;
++  float gain_ = 1.0f, attack_ = 0.0f, release_ = 0.0f;
++};
++
++// 16-tap windowed sinc (Kaiser, beta 7.5), 512 phases, linear between phases.
++// Cutoff at 0.94 of the input's Nyquist frequency, which also covers playback
++// up to ~1.05x without aliasing.
++class Sinc {
++ public:
++  static constexpr int kTaps = 16;
++  static constexpr int kHalf = kTaps / 2;  // taps before the point: kHalf - 1 = 7 history samples
++  static constexpr int kPhases = 512;
++
++  static const Sinc& Get() {
++    static const Sinc table;
++    return table;
++  }
++
++  // The value at x[0] + frac (0 <= frac < 1) from x[-(kHalf-1)] .. x[kHalf],
++  // `stride` floats apart (interleaved channels).
++  float At(const float* x, size_t stride, float frac) const {
++    const float fp = frac * float(kPhases);
++    const int p = std::min(int(fp), kPhases - 1);
++    const float t = fp - float(p);
++    const float* a = h_[size_t(p)].data();
++    const float* b = h_[size_t(p + 1)].data();
++    float sum = 0.0f;
++    for (int j = 0; j < kTaps; ++j) {
++      const float w = a[j] + (b[j] - a[j]) * t;
++      sum += w * x[std::ptrdiff_t(j - (kHalf - 1)) * std::ptrdiff_t(stride)];
++    }
++    return sum;
++  }
++
++ private:
++  Sinc() {
++    constexpr double kPi = 3.14159265358979323846, kBeta = 7.5, kCutoff = 0.94;
++    auto bessel_i0 = [](double v) {
++      double sum = 1.0, term = 1.0;
++      for (int k = 1; k < 32; ++k) {
++        term *= (v / (2.0 * k)) * (v / (2.0 * k));
++        sum += term;
++      }
++      return sum;
++    };
++    const double i0b = bessel_i0(kBeta);
++    for (int p = 0; p <= kPhases; ++p) {
++      const double frac = double(p) / kPhases;
++      double total = 0.0;
++      std::array<double, kTaps> w{};
++      for (int j = 0; j < kTaps; ++j) {
++        const double d = double(j - (kHalf - 1)) - frac;  // distance from the point
++        const double xs = kCutoff * d;
++        const double sinc = std::fabs(xs) < 1e-9 ? 1.0 : std::sin(kPi * xs) / (kPi * xs);
++        const double r = d / double(kHalf);
++        const double win = std::fabs(r) >= 1.0 ? 0.0 : bessel_i0(kBeta * std::sqrt(1.0 - r * r)) / i0b;
++        w[size_t(j)] = sinc * win;
++        total += w[size_t(j)];
++      }
++      for (int j = 0; j < kTaps; ++j) h_[size_t(p)][size_t(j)] = float(w[size_t(j)] / total);  // (unity at DC)
++    }
++  }
++  std::array<std::array<float, kTaps>, kPhases + 1> h_{};
++};
++
++// Float (-1..1) to 16 bits with triangular dither of one step.
++class Dither16 {
++ public:
++  int16_t operator()(float v) {
++    const float noise = (Next() + Next() - 1.0f);  // (-1, 1), triangular
++    const float s = std::clamp(v, -1.0f, 1.0f) * 32767.0f + noise;
++    return int16_t(std::clamp(std::lround(s), -32768L, 32767L));
++  }
++
++ private:
++  float Next() {
++    state_ = state_ * 1664525u + 1013904223u;
++    return float(state_ >> 8) * (1.0f / 16777216.0f);
++  }
++  uint32_t state_ = 0x1234567u;
++};
++
++}  // namespace rex::audio

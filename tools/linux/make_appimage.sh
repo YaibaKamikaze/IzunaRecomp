@@ -1,8 +1,10 @@
 #!/bin/bash
 # [IzunaRecomp] The Linux release: an AppImage of the desktop build.
-#   tools/linux/make_appimage.sh [ng2 binary] [destination]
+#   tools/linux/make_appimage.sh [ng2 binary] [destination] [compat binary]
 #     -> <destination>/IzunaRecomp-<version>-x86_64.AppImage
-# The binary: out/linux-desktop/ng2 (tools/linux/build.sh). DXC's Linux
+# The binaries: out/linux-desktop/ng2 (x86-64-v3) and
+# out/linux-desktop-compat/ng2 (x86-64-v2), both from tools/linux/build.sh;
+# AppRun starts the compat one on a processor without AVX2. DXC's Linux
 # libraries (libdxcompiler.so, libdxil.so) go beside it - the shaders are
 # compiled from the player's copy at the first start, as on Windows. Licences:
 # the Windows release's list (tools/windows/make_release.sh). appimagetool:
@@ -12,16 +14,28 @@ here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/../.." && pwd)"
 bin="${1:-$root/out/linux-desktop/ng2}"
 dest="${2:-$root/out/linux-release}"
+compat="${3:-$root/out/linux-desktop-compat/ng2}"
 version="$(tr -d ' \r\n' < "$root/IZUNA_VERSION")"
 dxc_dir="${DXC_LINUX_DIR:-$HOME/ng2-ps5-deps/tools/reeot-XenosRecomp/thirdparty/dxc-bin/lib/x64}"
 [[ -f "$bin" ]] || { echo "no $bin (build it: tools/linux/build.sh)" >&2; exit 1; }
+[[ -f "$compat" ]] || { echo "no $compat (build it: IZUNA_CPU=compat tools/linux/build.sh)" >&2; exit 1; }
+# Both must run on glibc 2.35 and have SDL's desktop backends (tools/linux/build.sh
+# refuses a build without them; checked again on what is packaged).
+for b in "$bin" "$compat"; do
+  newest=$(objdump -T "$b" | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)
+  case $newest in GLIBC_2.[0-9]|GLIBC_2.[12][0-9]|GLIBC_2.3[0-5]) ;; *) echo "refusing: $b needs $newest" >&2; exit 1 ;; esac
+  for lib in libX11.so.6 libwayland-client.so.0 libpipewire-0.3.so.0 libpulse.so.0 libasound.so.2 libudev.so.1; do
+    grep -aqF "$lib" "$b" || { echo "refusing: $b has no SDL backend for $lib" >&2; exit 1; }
+  done
+done
 [[ -f "$dxc_dir/libdxcompiler.so" ]] || { echo "no $dxc_dir/libdxcompiler.so (set DXC_LINUX_DIR)" >&2; exit 1; }
 
 app="$dest/IzunaRecomp.AppDir"
 rm -rf "$app"
 mkdir -p "$app/usr/bin" "$app/usr/share/izunarecomp"
 cp "$bin" "$app/usr/bin/ng2"
-strip --strip-unneeded "$app/usr/bin/ng2" 2>/dev/null || true
+cp "$compat" "$app/usr/bin/ng2-compat"
+strip --strip-unneeded "$app/usr/bin/ng2" "$app/usr/bin/ng2-compat" 2>/dev/null || true
 cp "$dxc_dir/libdxcompiler.so" "$app/usr/bin/"
 [[ -f "$dxc_dir/libdxil.so" ]] && cp "$dxc_dir/libdxil.so" "$app/usr/bin/"
 cp "$here/AppRun" "$app/AppRun"

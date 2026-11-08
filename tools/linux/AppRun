@@ -9,4 +9,12 @@ DATA="${XDG_DATA_HOME:-$HOME/.local/share}/IzunaRecomp"
 mkdir -p "$DATA" || exit 1
 cp -rn "$HERE/usr/share/izunarecomp/." "$DATA/" 2>/dev/null
 export REX_APP_FOLDER="$DATA"
-exec "$HERE/usr/bin/ng2" "$@"
+# ng2 is built for x86-64-v3 (AVX2, FMA, BMI2: Intel since 2013, AMD since
+# 2015, the Steam Deck); older processors get ng2-compat (x86-64-v2), as
+# ng2.exe hands over to ng2-compat.exe on Windows.
+BIN="$HERE/usr/bin/ng2"
+flags=$(grep -m1 '^flags' /proc/cpuinfo 2>/dev/null)
+for f in avx2 fma bmi2; do
+  case " $flags " in *" $f "*) ;; *) BIN="$HERE/usr/bin/ng2-compat" ;; esac
+done
+exec "$BIN" "$@"

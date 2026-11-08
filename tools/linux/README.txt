@@ -5,10 +5,15 @@ A native recompilation of Ninja Gaiden II (Xbox 360), drawn by the Kasumi
 Renderer (Vulkan). No emulator and no game files come with it: you need your
 own copy of the game.
 
-Needs: a 64-bit Linux with glibc 2.39 or newer (SteamOS 3.6+, Ubuntu 24.04+,
-Fedora 40+, Arch, ...), a GPU with a Vulkan driver (Mesa RADV / ANV / NVK, or
-NVIDIA's), a processor with AVX2 (Intel since 2013, every AMD Ryzen, the Steam
-Deck).
+Needs: a 64-bit Linux from 2022 or newer - glibc 2.35+ (SteamOS, Bazzite,
+Ubuntu 22.04+, Debian 12+, Fedora 36+, Linux Mint 21+, Arch, openSUSE ...),
+under any desktop (X11 or Wayland: KDE, GNOME, gamescope, ...), and a GPU with
+a Vulkan driver (Mesa RADV / ANV / NVK, or NVIDIA's). Sound through PipeWire,
+PulseAudio or ALSA, whichever the system has. Processors without AVX2 get a
+compatible build automatically.
+
+If it does not start because FUSE is missing, run it as
+  ./IzunaRecomp-*.AppImage --appimage-extract-and-run
 
 
 Starting

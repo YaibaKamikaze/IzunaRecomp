@@ -2,6 +2,14 @@
 
 ## v0.2.1 — Linux, PS5, smoother starts, accuracy fixes
 
+**Linux AppImage replaced (2026-11-07).** The first v0.2.1 AppImage could not
+open a window ("No available video device"): its SDL had been built without
+X11, Wayland, sound or udev support. The replacement has all of them, runs on
+any Linux from 2022 on (glibc 2.35: Ubuntu 22.04+, Debian 12, Fedora 36+,
+SteamOS, Bazzite, Arch...) under any desktop, carries a second build for
+processors without AVX2, and ignores a `default.xexp` left in the game folder.
+Please download it again.
+
 **New**
 - **PS5:** the app folder `PPSA94203` for consoles that run homebrew apps,
   with the game's shaders built in (no first-start wait). It can use the game

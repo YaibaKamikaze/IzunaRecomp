@@ -62,13 +62,22 @@ and the libraries' licences. It refuses to package any game file.
 ## 4. The Linux build (the AppImage)
 
 ```
-tools/linux/build.sh                       # out/linux-desktop/ng2
+tools/linux/sysroot/make_sysroot.sh        # once: ~/ng2-ps5-deps/linux-sysroot
+tools/linux/build.sh                       # out/linux-desktop/ng2         (x86-64-v3)
+IZUNA_CPU=compat tools/linux/build.sh      # out/linux-desktop-compat/ng2  (x86-64-v2)
 tools/linux/make_appimage.sh               # out/linux-release/IzunaRecomp-<version>-x86_64.AppImage
 ```
 
-It needs DXC 1.8's Linux libraries (`libdxcompiler.so`, `libdxil.so`;
-`DXC_LINUX_DIR=` their folder) and downloads appimagetool 1.9.0 once. The
-binary needs glibc 2.38 or newer where it runs; libstdc++ is linked in.
+The build compiles against an Ubuntu 22.04 sysroot that `make_sysroot.sh`
+fetches from the Ubuntu archive (no root needed): glibc 2.35 and GCC 12's
+libstdc++ (linked in), so the binaries run on any distribution from 2022 on,
+plus the headers of X11, Wayland, PipeWire, PulseAudio, ALSA, udev and D-Bus,
+so SDL builds all of those backends and loads whichever the player's system
+has. `build.sh` refuses an SDL without them, or a binary that needs more than
+glibc 2.35. The AppImage carries both binaries; its `AppRun` starts the compat
+one on a processor without AVX2. It also needs DXC 1.8's Linux libraries
+(`libdxcompiler.so`, `libdxil.so`; `DXC_LINUX_DIR=` their folder) and downloads
+appimagetool 1.9.0 once.
 
 The game's shaders are not built here: `ng2.exe` recompiles them from the
 player's copy at the first start (`src/izuna/izuna_shaders.cpp`, with the

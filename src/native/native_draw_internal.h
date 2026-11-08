@@ -29,8 +29,10 @@
 #include <tuple>
 #include <mutex>
 #include <thread>
+#if defined(__x86_64__) || defined(_M_X64)
 #include <x86intrin.h>
 #include <immintrin.h>
+#endif
 #include <chrono>
 #include <cstring>
 #include <unordered_map>
@@ -180,6 +182,22 @@ extern "C" uint64_t sceKernelGetTscFrequency(void);
 inline uint64_t Ticks() { return sceKernelReadTsc(); }
 inline double NsPerTick() {
   static const double v = 1e9 / double(std::max<uint64_t>(sceKernelGetTscFrequency(), 1));
+  return v;
+}
+#elif defined(__aarch64__)
+// [IzunaRecomp] Android: the ARM generic timer - a constant-rate counter
+// readable from user space, its rate in cntfrq_el0.
+inline uint64_t Ticks() {
+  uint64_t v;
+  asm volatile("mrs %0, cntvct_el0" : "=r"(v));
+  return v;
+}
+inline double NsPerTick() {
+  static const double v = [] {
+    uint64_t f;
+    asm volatile("mrs %0, cntfrq_el0" : "=r"(f));
+    return 1e9 / double(std::max<uint64_t>(f, 1));
+  }();
   return v;
 }
 #else
