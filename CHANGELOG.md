@@ -44,6 +44,12 @@
 - Left unchanged: this release carries the same `IzunaRecomp-0.2.1-ps5.zip` as v0.2.1 (its source is
   the `v0.2.1-ps5` tag). The `default.xexp` fix and the rest of v0.2.2 are not in it.
 
+**Known issues**
+- **Android performance is poor** — the game runs, but not well yet; the Android build still has to be
+  optimised.
+- Android needs a Turnip driver: Qualcomm's own driver cannot run the game's shaders.
+- Android's touch controls cannot be moved or resized yet.
+
 ## v0.2.1 — Linux, PS5, smoother starts, accuracy fixes
 
 **Linux AppImage replaced (2026-11-07).** The first v0.2.1 AppImage could not
