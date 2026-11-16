@@ -20,8 +20,10 @@ struct DrawContext {
   PFN_vkGetInstanceProcAddr get_instance_proc_addr = nullptr;
   PFN_vkGetDeviceProcAddr get_device_proc_addr = nullptr;
   uint64_t guest_address = 0;  // device address of the imported guest physical memory
+  VkBuffer guest_buffer = VK_NULL_HANDLE;  // [IzunaRecomp] that memory's buffer (set 6: storage buffers)
   bool graphics_pipeline_library = false;  // VK_EXT_graphics_pipeline_library enabled on the device
   bool dual_src_blend = false;             // [IzunaRecomp] dualSrcBlend enabled (alpha to mask on 2x MSAA)
+  bool pipeline_stats = false;             // [IzunaRecomp] VK_KHR_pipeline_executable_properties enabled
   // The command buffer being recorded (begun on first use: a frame is a chain
   // of segments, one per Direct3D kickoff), its frame's index (0/1: which half
   // of the per-frame upload ring), and whether it starts a new frame.

@@ -21,6 +21,10 @@ using Callback = bool (*)(void* user, PPCContext& ctx, uint8_t* base, bool after
 // none starts there. Hooks run in the order added.
 int Add(uint32_t address, bool after, Callback callback, void* user);
 void Remove(int id);
+// The function at `address` is never run again (each call returns at once,
+// registers as they were): for the engine's own work whose result nothing
+// uses. Mods' hooks on it still run. False if no function starts there.
+bool Skip(uint32_t address);
 // Whether a game function starts at `address`.
 bool IsFunction(uint32_t address);
 uint32_t FunctionCount();

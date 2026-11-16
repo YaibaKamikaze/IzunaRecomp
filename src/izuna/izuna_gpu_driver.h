@@ -37,5 +37,9 @@ void RendererStarted();
 
 // The package in use, or "" for the system driver.
 std::string InUse();
+// The setting this start was asked for (Install's id, before any fallback):
+// START GAME restarts the app when the player has chosen another since -
+// a driver is loaded only as the app starts.
+std::string Requested();
 
 }  // namespace izuna::gpu_driver

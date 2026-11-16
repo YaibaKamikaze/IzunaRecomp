@@ -1,0 +1,12 @@
+/* [IzunaRecomp] libmain.so's exports: what SDL's Java side and ours look up
+   (JNI_OnLoad, the Java_* natives, SDL_main for nativeRunMain). Everything
+   else - the recompiled game above all - stays inside the library, so calls
+   to it are direct (CMakeLists.txt). */
+{
+  global:
+    JNI_OnLoad;
+    Java_*;
+    SDL_main;
+  local:
+    *;
+};

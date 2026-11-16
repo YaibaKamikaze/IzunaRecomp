@@ -1,5 +1,5 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index be9a0873..4cb913fe 100644
+index be9a0873..e9f010f1 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -31,6 +31,15 @@ if(REXGLUE_ENABLE_PERF_COUNTERS)
@@ -18,7 +18,23 @@ index be9a0873..4cb913fe 100644
  # Graphics backend selection
  # D3D12: Windows only, ON by default.
  # Vulkan: Cross-platform, ON by default on Linux, OFF by default on Windows.
-@@ -237,9 +246,14 @@ configure_file(
+@@ -123,7 +132,14 @@ if(NOT WIN32)
+     # [ps5 port] PS5: the default (small) code model, as the PS5 linker script
+     # and signer expect - large puts every function in its own .ltext.*
+     # section (94k sections: more than an ELF section table holds).
+-    if(CMAKE_SYSTEM_PROCESSOR MATCHES "AMD64|x86_64" AND NOT APPLE AND NOT PS5)
++    # [IzunaRecomp] The small code model on Linux x86_64 too: code and data
++    # within 2 GB of each other (Ninja Gaiden II: ~120 MB). The large model
++    # made every call between recompiled functions an indirect one through
++    # the GOT (movabs + call reg) and every global a 64-bit absolute load -
++    # paid on the Steam Deck in every guest call. REXGLUE_LARGE_CODE_MODEL=ON
++    # brings it back for a program that really is over 2 GB.
++    option(REXGLUE_LARGE_CODE_MODEL "Linux x86_64: -mcmodel=large (programs over 2 GB)" OFF)
++    if(CMAKE_SYSTEM_PROCESSOR MATCHES "AMD64|x86_64" AND NOT APPLE AND NOT PS5 AND REXGLUE_LARGE_CODE_MODEL)
+         # Large code model on Linux x86_64 for linking with very large recompiled executables (35MB+).
+         # macOS uses small: the ld64 linker on macOS 15+ rejects text relocations produced
+         # by -mcmodel=large, and macOS maps binaries in the low address space so ±2GB is sufficient.
+@@ -237,9 +253,14 @@ configure_file(
  )
  
  # Output directories (multi-config appends /<Config>/ automatically)
@@ -36,7 +52,7 @@ index be9a0873..4cb913fe 100644
  
  # Sanitizer support for debugging memory corruption and undefined behavior
  if(REXGLUE_ENABLE_SANITIZERS)
-@@ -270,7 +284,9 @@ add_subdirectory(src/filesystem)
+@@ -270,7 +291,9 @@ add_subdirectory(src/filesystem)
  add_subdirectory(src/ui)
  add_subdirectory(src/input)
  add_subdirectory(src/audio)
@@ -47,6 +63,32 @@ index be9a0873..4cb913fe 100644
  add_subdirectory(src/system)
  add_subdirectory(src/kernel)
  # [svr2011] Cross builds (Android): the recompiler runs on the build host, so
+diff --git a/cmake/rexglue_helpers.cmake b/cmake/rexglue_helpers.cmake
+index b0957268..83867b78 100644
+--- a/cmake/rexglue_helpers.cmake
++++ b/cmake/rexglue_helpers.cmake
+@@ -50,10 +50,18 @@ function(rexglue_apply_target_settings target_name)
+         if(PS5)
+             # [ps5 port] default code model (see the top-level CMakeLists.txt).
+         elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
+-            target_link_options(${target_name} PRIVATE -Wl,--no-relax)
+-            target_compile_options(${target_name} PRIVATE -mcmodel=large)
++            # [IzunaRecomp] small code model unless asked (top-level CMakeLists.txt)
++            if(REXGLUE_LARGE_CODE_MODEL)
++                target_link_options(${target_name} PRIVATE -Wl,--no-relax)
++                target_compile_options(${target_name} PRIVATE -mcmodel=large)
++            endif()
+         elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|ARM64")
+-            target_compile_options(${target_name} PRIVATE -march=armv8-a)
++            # [IzunaRecomp] Only when the build names no CPU itself: added
++            # after CMAKE_CXX_FLAGS, it overrode the Android build's
++            # -march=armv8.2-a+fp16+dotprod+rcpc (tools/android/build.sh).
++            if(NOT CMAKE_CXX_FLAGS MATCHES "-march=")
++                target_compile_options(${target_name} PRIVATE -march=armv8-a)
++            endif()
+             # [svr2011] REXGLUE_ARM64_TUNE=<cpu>: instruction scheduling for that
+             # core (the same instructions run everywhere) - e.g. cortex-a53 for
+             # in-order little cores.
 diff --git a/cmake/rexglue_install.cmake b/cmake/rexglue_install.cmake
 index d9a64ebb..bd325f0d 100644
 --- a/cmake/rexglue_install.cmake
@@ -173,7 +215,7 @@ index f8949cae..44d72ed3 100644
  
  }  // namespace rex::audio::sdl
 diff --git a/include/rex/chrono/chrono.h b/include/rex/chrono/chrono.h
-index 87fbaaed..10f42825 100644
+index 87fbaaed..19fb3458 100644
 --- a/include/rex/chrono/chrono.h
 +++ b/include/rex/chrono/chrono.h
 @@ -116,7 +116,8 @@ using XSystemClock = detail::NtSystemClock<detail::Domain::Guest>;
@@ -182,7 +224,7 @@ index 87fbaaed..10f42825 100644
  
 -#if defined(__APPLE__) || defined(__ANDROID__) || (defined(_LIBCPP_VERSION) && _LIBCPP_VERSION < 200000)  // [ps5 port] any older libc++
 +#if defined(__APPLE__) || defined(__ANDROID__) || (defined(_LIBCPP_VERSION) && _LIBCPP_VERSION < 200000) || \
-+    (defined(__GLIBCXX__) && __cpp_lib_chrono < 201907L)  // [ps5 port] any older libc++; [IzunaRecomp] GCC 12's libstdc++ (the Linux build's Ubuntu 22.04 sysroot)
++    (defined(_GLIBCXX_RELEASE) && _GLIBCXX_RELEASE < 13)  // [ps5 port] any older libc++; [IzunaRecomp] GCC 12's libstdc++ (the Linux build's Ubuntu 22.04 sysroot; 13 has it)
  // Apple libc++ does not expose clock_time_conversion or clock_cast.
  template <class, class>
  struct clock_time_conversion {};
@@ -204,10 +246,10 @@ index 8200139a..0f8d086f 100644
    // === Analysis tuning (optional) ===
    uint32_t maxJumpExtension = 65536;  ///< Max bytes to extend function for jump table targets
 diff --git a/include/rex/external_frame.h b/include/rex/external_frame.h
-index a1a889e3..335bb7c8 100644
+index a1a889e3..f207c6ed 100644
 --- a/include/rex/external_frame.h
 +++ b/include/rex/external_frame.h
-@@ -71,6 +71,11 @@ struct VulkanDevice {
+@@ -71,6 +71,12 @@ struct VulkanDevice {
    bool null_descriptor = false;
    bool sampler_mirror_clamp_to_edge = false;
    bool geometry_shader = false;
@@ -216,10 +258,11 @@ index a1a889e3..335bb7c8 100644
 +  // [IzunaRecomp] dualSrcBlend: a pixel shader's second output as a blend
 +  // factor (alpha to mask on 2x MSAA surfaces, as the resolve shows it).
 +  bool dual_src_blend = false;
++  bool pipeline_executable_info = false;  // [IzunaRecomp] VK_KHR_pipeline_executable_properties
  };
  
  using Provider = std::function<bool(Frame& frame)>;
-@@ -94,6 +99,59 @@ const D3D11Device* GetD3D11Device();
+@@ -94,6 +100,59 @@ const D3D11Device* GetD3D11Device();
  // While true, the emulated GPU skips drawing (see above).
  void SetHostDrawingDisabled(bool disabled);
  bool HostDrawingDisabled();
@@ -731,38 +774,33 @@ index 0ede5426..19522fd6 100644
      setcsr(csr);
    }
 diff --git a/include/rex/ppc/intrinsics.h b/include/rex/ppc/intrinsics.h
-index 3c2fe090..11b8c87b 100644
+index 3c2fe090..cd51369d 100644
 --- a/include/rex/ppc/intrinsics.h
 +++ b/include/rex/ppc/intrinsics.h
-@@ -16,6 +16,7 @@
- #include <climits>
- #include <cmath>
- #include <cstring>
-+#include <thread>
- 
- #include <simde/x86/avx.h>
- #include <simde/x86/avx2.h>
-@@ -393,6 +394,19 @@ inline simde__m128i simde_mm_sllv_epi8(simde__m128i a, simde__m128i count) {
+@@ -393,6 +393,22 @@ inline simde__m128i simde_mm_sllv_epi8(simde__m128i a, simde__m128i count) {
    return simde_mm_packus_epi16(r_lo, r_hi);
  }
  
-+// [ng2] db16cyc: a PAUSE, and a real yield every 1024 executions per thread.
-+inline void db16cyc() {
-+#if defined(__x86_64__) || defined(_M_X64)
-+  __builtin_ia32_pause();
-+#elif defined(__aarch64__) || defined(_M_ARM64)
-+  __asm__ __volatile__("yield");
-+#endif
-+  static thread_local uint32_t count = 0;
-+  if ((++count & 1023) == 0) {
-+    std::this_thread::yield();
-+  }
-+}
++// [ng2] db16cyc: the guest's "spinning, low priority" hint (Direct3D's wait
++// for the GPU, the audio barrier).
++// [IzunaRecomp] A back-off instead of a spin that keeps a core busy for the
++// whole wait (the game's threads at 95-100% of a core on Android, heating the
++// chip until the GPU throttles - test56/58): a pause at first, a yield after
++// 64 spins in a row, and from 128 on a 50 us sleep each time (a
++// high-resolution timer on Windows, whose sleeps are otherwise whole
++// milliseconds). A spin more than 200 us after the thread's last one starts a
++// new wait (count from 0). Out of line (src/system/spin_backoff.cpp): it is
++// at every guest spin, and only ever on a path that waits.
++// The recompiler also puts it at the head of each loop that only reads memory
++// until another thread changes it (REX_SPIN_WAIT, function_graph.cpp): the
++// game's own busy-waits, which had hardware threads to themselves on the 360.
++void SpinBackoff() noexcept;
++inline void db16cyc() { SpinBackoff(); }
 +
  }  // namespace rex::ppc
  
  //=============================================================================
-@@ -400,6 +414,7 @@ inline simde__m128i simde_mm_sllv_epi8(simde__m128i a, simde__m128i count) {
+@@ -400,6 +416,7 @@ inline simde__m128i simde_mm_sllv_epi8(simde__m128i a, simde__m128i count) {
  //=============================================================================
  // Vector mask tables accessible from global scope for generated code
  using rex::ppc::VectorMaskL;
@@ -1047,7 +1085,7 @@ index ef6ae4d5..da235e92 100644
   protected:
    enum class PaintResult {
 diff --git a/include/rex/ui/vulkan/device.h b/include/rex/ui/vulkan/device.h
-index a1cc533c..41f7253b 100644
+index a1cc533c..66c6f452 100644
 --- a/include/rex/ui/vulkan/device.h
 +++ b/include/rex/ui/vulkan/device.h
 @@ -97,7 +97,11 @@ class VulkanDevice {
@@ -1062,20 +1100,23 @@ index a1cc533c..41f7253b 100644
      bool tessellationShader = false;
      bool sampleRateShading = false;
      bool depthClamp = false;
-@@ -110,6 +114,12 @@ class VulkanDevice {
+@@ -110,6 +114,15 @@ class VulkanDevice {
      bool shaderCullDistance = false;
      bool sparseBinding = false;
      bool sparseResidencyBuffer = false;
 +    bool shaderInt64 = false;  // [native renderer track]
 +    bool shaderStorageImageReadWithoutFormat = false;   // [IzunaRecomp]
 +    bool shaderStorageImageWriteWithoutFormat = false;  // [IzunaRecomp]
++    bool shaderStorageBufferArrayDynamicIndexing = false;  // [IzunaRecomp]
 +    // [IzunaRecomp] VK_KHR_present_id + VK_KHR_present_wait: the presenter
 +    // waits for its pictures to reach the screen (vulkan_presenter.cpp).
 +    bool presentWait = false;
++    // [IzunaRecomp] VK_KHR_pipeline_executable_properties: pipeline statistics.
++    bool pipelineExecutableInfo = false;
  
      // VK_KHR_sampler_mirror_clamp_to_edge (#15, promoted to 1.2)
  
-@@ -229,6 +239,8 @@ class VulkanDevice {
+@@ -229,6 +242,8 @@ class VulkanDevice {
    };
  
    const Functions& functions() const { return functions_; }
@@ -1084,7 +1125,7 @@ index a1cc533c..41f7253b 100644
  
    template <typename Object>
    void SetObjectName(const VkObjectType object_type, const Object object_handle,
-@@ -282,6 +294,14 @@ class VulkanDevice {
+@@ -282,6 +297,14 @@ class VulkanDevice {
                                    const uint32_t queue_index) const {
      return queue_families()[queue_family_index].queues[queue_index]->Acquire();
    }
@@ -1099,7 +1140,7 @@ index a1cc533c..41f7253b 100644
  
    struct MemoryTypes {
      uint32_t device_local = 0b0;
-@@ -304,12 +324,14 @@ class VulkanDevice {
+@@ -304,12 +327,14 @@ class VulkanDevice {
    VkDevice device_ = nullptr;
  
    Functions functions_;
@@ -1115,7 +1156,7 @@ index a1cc533c..41f7253b 100644
  
  }  // namespace vulkan
 diff --git a/resources/templates/codegen/pch_h.inja b/resources/templates/codegen/pch_h.inja
-index b10adf97..87f24389 100644
+index b10adf97..94ad026f 100644
 --- a/resources/templates/codegen/pch_h.inja
 +++ b/resources/templates/codegen/pch_h.inja
 @@ -45,6 +45,72 @@
@@ -1191,10 +1232,30 @@ index b10adf97..87f24389 100644
  //=============================================================================
  // Image Info
  //=============================================================================
-@@ -144,6 +210,41 @@ extern PPCFuncMapping PPCFuncMappings[];
- #define REX_STORE_U32(x, y) (*(volatile u32*)(base + (u32)(x) + REX_PHYS_HOST_OFFSET(x)) = __builtin_bswap32(y))
- #define REX_STORE_U64(x, y) (*(volatile u64*)(base + (u32)(x) + REX_PHYS_HOST_OFFSET(x)) = __builtin_bswap64(y))
+@@ -132,17 +198,90 @@ extern PPCFuncMapping PPCFuncMappings[];
  
+ #define REX_RAW_ADDR(x) (base + (u32)(x) + REX_PHYS_HOST_OFFSET(x))
+ 
+-#define REX_LOAD_U8(x) (*(volatile u8*)(base + (u32)(x) + REX_PHYS_HOST_OFFSET(x)))
+-#define REX_LOAD_U16(x) __builtin_bswap16(*(volatile u16*)(base + (u32)(x) + REX_PHYS_HOST_OFFSET(x)))
+-#define REX_LOAD_U32(x) __builtin_bswap32(*(volatile u32*)(base + (u32)(x) + REX_PHYS_HOST_OFFSET(x)))
+-#define REX_LOAD_U64(x) __builtin_bswap64(*(volatile u64*)(base + (u32)(x) + REX_PHYS_HOST_OFFSET(x)))
++
++
++
++
+ #define REX_LOAD_STRING(x, len) \
+   std::string_view(reinterpret_cast<const char*>(base + (u32)(x) + REX_PHYS_HOST_OFFSET(x)), (len))
+ 
+-#define REX_STORE_U8(x, y)  (*(volatile u8*)(base + (u32)(x) + REX_PHYS_HOST_OFFSET(x)) = (y))
+-#define REX_STORE_U16(x, y) (*(volatile u16*)(base + (u32)(x) + REX_PHYS_HOST_OFFSET(x)) = __builtin_bswap16(y))
+-#define REX_STORE_U32(x, y) (*(volatile u32*)(base + (u32)(x) + REX_PHYS_HOST_OFFSET(x)) = __builtin_bswap32(y))
+-#define REX_STORE_U64(x, y) (*(volatile u64*)(base + (u32)(x) + REX_PHYS_HOST_OFFSET(x)) = __builtin_bswap64(y))
++
++
++
++
++
 +// [ng2 ps5 port] Accesses at r1 + constant: the thread's own stack frame,
 +// which no other thread touches. They are not volatile, so the compiler can
 +// keep a spilled value in a register, forward a store to the next load and
@@ -1210,6 +1271,44 @@ index b10adf97..87f24389 100644
 +static inline void rex_stack_store_u16(u8* p, u16 v) { v = __builtin_bswap16(v); __builtin_memcpy(p, &v, 2); }
 +static inline void rex_stack_store_u32(u8* p, u32 v) { v = __builtin_bswap32(v); __builtin_memcpy(p, &v, 4); }
 +static inline void rex_stack_store_u64(u8* p, u64 v) { v = __builtin_bswap64(v); __builtin_memcpy(p, &v, 8); }
++// [IzunaRecomp] patch_guest_access
++// Guest memory, as the compiler may optimise it (tools/izuna/patch_guest_access.py).
++#ifdef REX_GUEST_ACCESSES_VOLATILE
++#define REX_GUEST_PTR(x) ((volatile u8*)(base + (u32)(x) + REX_PHYS_HOST_OFFSET(x)))
++#define REX_GUEST_LOAD(bits, x) rex_guest_load_v##bits(REX_GUEST_PTR(x))
++#define REX_GUEST_STORE(bits, x, y) rex_guest_store_v##bits(REX_GUEST_PTR(x), (y))
++static inline u8 rex_guest_load_v8(volatile u8* p) { return *p; }
++static inline u16 rex_guest_load_v16(volatile u8* p) { return __builtin_bswap16(*(volatile u16*)p); }
++static inline u32 rex_guest_load_v32(volatile u8* p) { return __builtin_bswap32(*(volatile u32*)p); }
++static inline u64 rex_guest_load_v64(volatile u8* p) { return __builtin_bswap64(*(volatile u64*)p); }
++static inline void rex_guest_store_v8(volatile u8* p, u8 v) { *p = v; }
++static inline void rex_guest_store_v16(volatile u8* p, u16 v) { *(volatile u16*)p = __builtin_bswap16(v); }
++static inline void rex_guest_store_v32(volatile u8* p, u32 v) { *(volatile u32*)p = __builtin_bswap32(v); }
++static inline void rex_guest_store_v64(volatile u8* p, u64 v) { *(volatile u64*)p = __builtin_bswap64(v); }
++#define REX_LABEL_BARRIER() ((void)0)
++#else
++#define REX_GUEST_PTR(x) (base + (u32)(x) + REX_PHYS_HOST_OFFSET(x))
++#define REX_GUEST_LOAD(bits, x) rex_stack_load_u##bits(REX_GUEST_PTR(x))
++#define REX_GUEST_STORE(bits, x, y) rex_stack_store_u##bits(REX_GUEST_PTR(x), (y))
++// (not a memory clobber: that would also force the guest registers kept in
++// ctx out to memory and back on every pass of every loop. Hiding `base`
++// from the compiler is enough: after the label no guest address is known
++// to equal one from before it, so no guest load is reused, hoisted out of
++// the loop or kept in a register, and no store is moved past it.)
++#define REX_LABEL_BARRIER() __asm__ __volatile__("" : "+r"(base))
++#endif
++// The head of a busy-wait loop (the recompiler finds them: function_graph.cpp
++// IsSpinLoopHead): the back-off of the guest's spin hint, db16cyc.
++#define REX_SPIN_WAIT() ppc_db16cyc()
++#define REX_LOAD_U8(x) REX_GUEST_LOAD(8, x)
++#define REX_LOAD_U16(x) REX_GUEST_LOAD(16, x)
++#define REX_LOAD_U32(x) REX_GUEST_LOAD(32, x)
++#define REX_LOAD_U64(x) REX_GUEST_LOAD(64, x)
++#define REX_STORE_U8(x, y) REX_GUEST_STORE(8, x, y)
++#define REX_STORE_U16(x, y) REX_GUEST_STORE(16, x, y)
++#define REX_STORE_U32(x, y) REX_GUEST_STORE(32, x, y)
++#define REX_STORE_U64(x, y) REX_GUEST_STORE(64, x, y)
++
 +#ifdef REX_STACK_ACCESSES_VOLATILE_FALLBACK
 +#define REX_STACK_LOAD_U8(x) REX_LOAD_U8(x)
 +#define REX_STACK_LOAD_U16(x) REX_LOAD_U16(x)
@@ -1229,10 +1328,9 @@ index b10adf97..87f24389 100644
 +#define REX_STACK_STORE_U32(x, y) rex_stack_store_u32(base + (u32)(x) + REX_PHYS_HOST_OFFSET(x), (y))
 +#define REX_STACK_STORE_U64(x, y) rex_stack_store_u64(base + (u32)(x) + REX_PHYS_HOST_OFFSET(x), (y))
 +#endif
-+
+ 
  #define REX_MEMORY_SIZE 0x100000000ull
  
- //=============================================================================
 diff --git a/src/audio/ps5/ps5_audio_driver.cpp b/src/audio/ps5/ps5_audio_driver.cpp
 index 3fbc549d..f27e6146 100644
 --- a/src/audio/ps5/ps5_audio_driver.cpp
@@ -2134,6 +2232,115 @@ index 5da54a0d..dd380289 100644
    // Integer scalars (only override if present)
    if (auto v = toml["longjmp_address"].value<int64_t>()) {
      uint32_t addr = static_cast<uint32_t>(*v);
+diff --git a/src/codegen/function_graph.cpp b/src/codegen/function_graph.cpp
+index fc918bb2..348808c7 100644
+--- a/src/codegen/function_graph.cpp
++++ b/src/codegen/function_graph.cpp
+@@ -344,6 +344,89 @@ void emit_print(std::string& out, fmt::format_string<Args...> fmt, Args&&... arg
+   fmt::vformat_to(std::back_inserter(out), fmt.get(), fmt::make_format_args(args...));
+ }
+ 
++// [IzunaRecomp] Whether the loop starting at `head` is a busy-wait: a short
++// run of instructions that only read memory, compare and branch - leaving or
++// going back to `head` - until another thread changes what it reads. Nothing
++// in it is stored or called, and no register a load takes its address from
++// is written in it, so every pass reads the same words. On the Xbox 360 such
++// a wait had a hardware thread to itself; here it would hold a whole core,
++// so the label gets REX_SPIN_WAIT (the back-off of rex/ppc/intrinsics.h).
++// Loops with the guest's own spin hint (db16cyc: or 31,31,31) already have it.
++bool IsSpinLoopHead(const BinaryView& binary, uint32_t head) {
++  constexpr int kMaxInstructions = 12;
++  uint32_t written = 0, bases = 0;
++  int loads = 0;
++  for (int i = 0; i < kMaxInstructions; ++i) {
++    const uint32_t address = head + uint32_t(i) * 4;
++    const auto* p = reinterpret_cast<const uint8_t*>(binary.translate(address));
++    if (!p) return false;
++    const uint32_t w = load_and_swap<uint32_t>(p);
++    const uint32_t op = w >> 26, rt = (w >> 21) & 31, ra = (w >> 16) & 31, rb = (w >> 11) & 31;
++    auto load = [&](bool indexed) {
++      written |= 1u << rt;
++      if (ra) bases |= 1u << ra;
++      if (indexed) bases |= 1u << rb;
++      ++loads;
++    };
++    switch (op) {
++      case 32: case 34: case 40: case 42:  // lwz lbz lhz lha
++        load(false);
++        break;
++      case 58:  // ld, lwa (not ldu)
++        if ((w & 3) == 1) return false;
++        load(false);
++        break;
++      case 10: case 11:  // cmpli cmpi
++        break;
++      case 21: case 28:  // rlwinm, andi.: rS -> rA
++        written |= 1u << ra;
++        break;
++      case 24:  // ori: only the nop
++        if (w != 0x60000000u) return false;
++        break;
++      case 31: {
++        const uint32_t xo = (w >> 1) & 0x3FF;
++        switch (xo) {
++          case 23: case 87: case 279: case 21:  // lwzx lbzx lhzx ldx
++            load(true);
++            break;
++          case 0: case 32:  // cmp cmpl
++            break;
++          case 444:  // or: db16cyc (or 31,31,31) has its own back-off; mr rA,rS
++            if (rt == 31 && ra == 31 && rb == 31) return false;
++            if (rt != rb) return false;
++            written |= 1u << ra;
++            break;
++          case 28:  // and
++            written |= 1u << ra;
++            break;
++          default:
++            return false;
++        }
++        break;
++      }
++      case 16: {  // bc: out of the loop, or back to its head
++        if (w & 1) return false;                  // (a call)
++        if (!(rt & 0x04)) return false;           // (a CTR count: a timed loop, not a wait)
++        const int32_t bd = int32_t(int16_t(w & 0xFFFC));
++        const uint32_t target = (w & 2) ? uint32_t(bd) : address + uint32_t(bd);
++        if (target == head) return loads > 0 && !(bases & written);
++        break;
++      }
++      case 18: {  // b: only back to the head
++        if (w & 1) return false;
++        int32_t li = int32_t(w & 0x03FFFFFC);
++        if (li & 0x02000000) li -= 0x04000000;
++        const uint32_t target = (w & 2) ? uint32_t(li) : address + uint32_t(li);
++        return target == head && loads > 0 && !(bases & written);
++      }
++      default:
++        return false;
++    }
++  }
++  return false;
++}
++
+ }  // namespace
+ 
+ std::string FunctionNode::emitCpp(const EmitContext& ctx) const {
+@@ -511,6 +594,14 @@ std::string FunctionNode::emitCpp(const EmitContext& ctx) const {
+       // Only emit each label once
+       if (labels.find(blockBase) != labels.end() && emittedLabels.insert(blockBase).second) {
+         emit_println(body, "loc_{:X}:", blockBase);
++        // [IzunaRecomp] Guest accesses are plain (non-volatile) ones; a
++        // compiler barrier at every label makes each loop - which always
++        // goes back to a label - read memory again on every pass, so a wait
++        // on another thread's write still sees it (pch_h.inja).
++        emit_println(body, "\tREX_LABEL_BARRIER();");
++        if (IsSpinLoopHead(ctx.binary, blockBase)) {
++          emit_println(body, "\tREX_SPIN_WAIT();");
++        }
+         csrState = CSRState::Unknown;
+       }
+ 
 diff --git a/src/core/CMakeLists.txt b/src/core/CMakeLists.txt
 index 2bd7a911..c6958e25 100644
 --- a/src/core/CMakeLists.txt
@@ -2980,7 +3187,7 @@ index 00000000..26f5b255
 +uint32_t CriticalSectionInitBy(uint32_t) { return 0; }
 +}  // namespace rex::ps5diag
 diff --git a/src/core/threading_posix.cpp b/src/core/threading_posix.cpp
-index a7cd2b30..3ae406d4 100644
+index a7cd2b30..fbd1b5f0 100644
 --- a/src/core/threading_posix.cpp
 +++ b/src/core/threading_posix.cpp
 @@ -13,6 +13,7 @@ static_assert(REX_PLATFORM_LINUX || REX_PLATFORM_MAC, "This file is POSIX-only")
@@ -3080,7 +3287,20 @@ index a7cd2b30..3ae406d4 100644
    uint32_t count_;
    const uint32_t maximum_count_;
  };
-@@ -1360,6 +1414,21 @@ WaitResult SignalAndWait(WaitHandle* wait_handle_to_signal, WaitHandle* wait_han
+@@ -1278,7 +1332,11 @@ std::chrono::milliseconds ComputeAlertableWaitTimeout(
+   if (deadline == std::chrono::steady_clock::time_point::max()) {
+     return kAlertablePollSlice;
+   }
+-  auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
++  // [IzunaRecomp] Rounded up, not down: the last part of every wait (under a
++  // millisecond) was a 0 ms wait, again and again until the deadline - a
++  // spin of up to a millisecond at the end of each timed alertable wait.
++  // (The wait may now end that much past its deadline, as a timeout may.)
++  auto remaining = std::chrono::ceil<std::chrono::milliseconds>(
+       deadline - std::chrono::steady_clock::now());
+   if (remaining <= std::chrono::milliseconds::zero()) {
+     return std::chrono::milliseconds::zero();
+@@ -1360,6 +1418,21 @@ WaitResult SignalAndWait(WaitHandle* wait_handle_to_signal, WaitHandle* wait_han
    if (posix_wait_handle_to_signal == nullptr || posix_wait_handle_to_wait_on == nullptr) {
      return WaitResult::kFailed;
    }
@@ -5451,7 +5671,7 @@ index 273b1383..cd42b6b5 100644
    return X_ERROR_SUCCESS;
  }
 diff --git a/src/input/sdl/sdl_input_driver.cpp b/src/input/sdl/sdl_input_driver.cpp
-index 4d5a475f..bdf83a88 100644
+index 4d5a475f..3bac9c8c 100644
 --- a/src/input/sdl/sdl_input_driver.cpp
 +++ b/src/input/sdl/sdl_input_driver.cpp
 @@ -9,8 +9,11 @@
@@ -5527,7 +5747,7 @@ index 4d5a475f..bdf83a88 100644
    const auto controller = SDL_OpenGamepad(event.gdevice.which);
    if (!controller) {
      assert_always();
-@@ -669,6 +698,33 @@ void SDLInputDriver::UpdateXCapabilities(ControllerState& state) {
+@@ -669,6 +698,41 @@ void SDLInputDriver::UpdateXCapabilities(ControllerState& state) {
    c.vibration.right_motor_speed = 0xFFFFu;
  }
  
@@ -5544,6 +5764,12 @@ index 4d5a475f..bdf83a88 100644
 +void SDLInputDriver::StartPollThread() {
 +  if (poll_thread_.joinable() || REXCVAR_GET(sdl_poll_ms) <= 0) return;
 +  poll_stop_.store(false, std::memory_order_release);
++  // [IzunaRecomp] test68: the controllers are this thread's to update - not
++  // also the UI thread's each time an event wakes it (SDL's default, inside
++  // its event pump): there every controller event it woke for polled the
++  // controllers again (the AYN Thor's UI thread at 60% of a core in play).
++  SDL_SetHint(SDL_HINT_AUTO_UPDATE_JOYSTICKS, "0");
++  SDL_SetHint(SDL_HINT_AUTO_UPDATE_SENSORS, "0");
 +  poll_thread_ = std::thread([this] {
 +    while (!poll_stop_.load(std::memory_order_acquire)) {
 +      SDL_UpdateGamepads();
@@ -5556,6 +5782,8 @@ index 4d5a475f..bdf83a88 100644
 +void SDLInputDriver::StopPollThread() {
 +  poll_stop_.store(true, std::memory_order_release);
 +  if (poll_thread_.joinable()) poll_thread_.join();
++  SDL_SetHint(SDL_HINT_AUTO_UPDATE_JOYSTICKS, "1");  // (back to SDL's own pump)
++  SDL_SetHint(SDL_HINT_AUTO_UPDATE_SENSORS, "1");
 +}
 +
  void SDLInputDriver::QueueControllerUpdate() {
@@ -5883,10 +6111,18 @@ index cf9a92ad..f59c1e47 100644
  
  void RegisterVideoExports(rex::runtime::ExportResolver* export_resolver,
 diff --git a/src/system/CMakeLists.txt b/src/system/CMakeLists.txt
-index 5678b60d..00a4f831 100644
+index 5678b60d..cee1f43b 100644
 --- a/src/system/CMakeLists.txt
 +++ b/src/system/CMakeLists.txt
-@@ -49,7 +49,10 @@ set(REXSYSTEM_SOURCES
+@@ -42,6 +42,7 @@ set(REXSYSTEM_SOURCES
+     map_parser.cpp
+     module.cpp
+     function_dispatcher.cpp
++    spin_backoff.cpp
+     gpu_plugin_loader.cpp
+     thread.cpp
+     thread_state.cpp
+@@ -49,7 +50,10 @@ set(REXSYSTEM_SOURCES
  )
  
  # [ps5 port] one static app on the PS5 (no shared libraries of our own).
@@ -6525,7 +6761,7 @@ index de6a4418..adb8763b 100644
    }
  };
 diff --git a/src/system/xthread.cpp b/src/system/xthread.cpp
-index e1e82aeb..6c42a80e 100644
+index e1e82aeb..3031f0b1 100644
 --- a/src/system/xthread.cpp
 +++ b/src/system/xthread.cpp
 @@ -978,6 +978,23 @@ X_STATUS XThread::Resume(uint32_t* out_suspend_count) {
@@ -6583,6 +6819,17 @@ index e1e82aeb..6c42a80e 100644
    guest_thread->suspend_count++;
    suspend_cv_.wait(lock, [guest_thread]() { return guest_thread->suspend_count == 0; });
    return previous;
+@@ -1045,6 +1079,10 @@ X_STATUS XThread::Delay(uint32_t processor_mode, uint32_t alertable, uint64_t in
+     timeout_ms = 0;
+   }
+   timeout_ms = chrono::Clock::ScaleGuestDurationMillis(timeout_ms);
++  // [IzunaRecomp] (v0.2.2.1: a delay under a millisecond is a yield again, as
++  // on Windows and in v0.2.2 - test61-test74 slept it, and a Linux sleep wakes
++  // 60 us and more late, which a short delay between two threads' handoffs
++  // does not need.)
+   CheckTitleTermination();
+   if (alertable) {
+     auto result = rex::thread::AlertableSleep(std::chrono::milliseconds(timeout_ms));
 diff --git a/src/ui/imgui_drawer.cpp b/src/ui/imgui_drawer.cpp
 index f270f3c0..4d300dea 100644
 --- a/src/ui/imgui_drawer.cpp
@@ -6664,6 +6911,37 @@ index dd6a1636..7ee5f2fa 100644
    // Now, it's known that `ready == writable` on the host presentation side.
    // Take the next `writable` with this assumption about its current value in
    // mind.
+diff --git a/src/ui/renderdoc_api.cpp b/src/ui/renderdoc_api.cpp
+index e1a5287c..e1980d78 100644
+--- a/src/ui/renderdoc_api.cpp
++++ b/src/ui/renderdoc_api.cpp
+@@ -9,6 +9,9 @@
+  * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
+  */
+ 
++#if !defined(_WIN32)
++#include <dlfcn.h>
++#endif
+ #include <rex/logging.h>
+ #include <rex/ui/renderdoc_api.h>
+ 
+@@ -28,6 +31,16 @@ std::unique_ptr<RenderDocAPI> RenderDocAPI::CreateIfConnected() {
+   // Try to load the RenderDoc library. If RenderDoc is attached, the library
+   // should already be loaded into the process and this will increment the
+   // reference count. If not attached, the load will fail and we return nullptr.
++#if !defined(_WIN32)
++  // [IzunaRecomp] Only if RenderDoc is already in the process: a plain dlopen
++  // LOADED an installed librenderdoc.so (the Steam Deck has one), which then
++  // hooked every Vulkan call of the session.
++  if (void* attached = dlopen(platform::lib_names::kRenderDoc, RTLD_NOW | RTLD_NOLOAD)) {
++    dlclose(attached);
++  } else {
++    return nullptr;
++  }
++#endif
+   if (!renderdoc_api->library_.Load(platform::lib_names::kRenderDoc)) {
+     return nullptr;
+   }
 diff --git a/src/ui/rex_app.cpp b/src/ui/rex_app.cpp
 index 6f1e89ff..4e09d3df 100644
 --- a/src/ui/rex_app.cpp
@@ -6740,7 +7018,7 @@ index 6f1e89ff..4e09d3df 100644
    });
  }
 diff --git a/src/ui/vulkan/vulkan_device.cpp b/src/ui/vulkan/vulkan_device.cpp
-index 2408810b..1a188b66 100644
+index 2408810b..8dc93a5a 100644
 --- a/src/ui/vulkan/vulkan_device.cpp
 +++ b/src/ui/vulkan/vulkan_device.cpp
 @@ -35,6 +35,9 @@ REXCVAR_DEFINE_BOOL(vulkan_require_vertex_pipeline_stores_and_atomics, true, "UI
@@ -6753,7 +7031,7 @@ index 2408810b..1a188b66 100644
  REXCVAR_DEFINE_BOOL(vulkan_simulate_mali, false, "UI/Vulkan",
                      "Test: hide the features and extensions an Arm Mali GPU lacks")
      .lifecycle(rex::cvar::Lifecycle::kInitOnly);
-@@ -228,6 +231,17 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
+@@ -228,6 +231,26 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
      // #2.
      XE_UI_VULKAN_STRUCT_EXTENSION(KHR_swapchain)
    }
@@ -6768,10 +7046,19 @@ index 2408810b..1a188b66 100644
 +    XE_UI_VULKAN_LOCAL_EXTENSION(KHR_present_wait)
 +  }
 +#endif
++  // [IzunaRecomp] #270: what the driver compiled each pipeline into
++  // (instructions, registers, waves, spills) - the native renderer logs it on
++  // Android and Linux (native_pipelines.cpp, native_pipeline_stats).
++  bool ext_KHR_pipeline_executable_properties = false;
++#if defined(__linux__)
++  if (get_physical_device_properties2_supported) {
++    XE_UI_VULKAN_LOCAL_EXTENSION(KHR_pipeline_executable_properties)
++  }
++#endif
  
    bool ext_1_2_KHR_sampler_mirror_clamp_to_edge = false;
    bool ext_1_1_KHR_maintenance1 = false;
-@@ -240,6 +254,16 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
+@@ -240,6 +263,16 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
    bool ext_1_3_EXT_shader_demote_to_helper_invocation = false;
    bool ext_1_3_KHR_dynamic_rendering = false;
    bool ext_EXT_non_seamless_cube_map = false;
@@ -6788,7 +7075,7 @@ index 2408810b..1a188b66 100644
    if (with_gpu_emulation) {
      // #15.
      XE_UI_VULKAN_LOCAL_PROMOTED_EXTENSION(KHR_sampler_mirror_clamp_to_edge, 1, 2)
-@@ -269,6 +293,19 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
+@@ -269,6 +302,19 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
        // [svr2011] #162 (needs #169).
        XE_UI_VULKAN_LOCAL_PROMOTED_EXTENSION(EXT_descriptor_indexing, 1, 2)
        XE_UI_VULKAN_LOCAL_PROMOTED_EXTENSION(KHR_maintenance3, 1, 1)
@@ -6808,7 +7095,7 @@ index 2408810b..1a188b66 100644
      }
      if (properties.apiVersion >= VK_MAKE_API_VERSION(0, 1, 1, 0)) {
        // #237.
-@@ -300,6 +337,16 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
+@@ -300,6 +346,16 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
          return nullptr;
        }
        assert_true(supported_extension_count == supported_extensions.size());
@@ -6825,7 +7112,7 @@ index 2408810b..1a188b66 100644
        for (const VkExtensionProperties& supported_extension : supported_extensions) {
          const auto requested_extension_it =
              requested_extensions.find(supported_extension.extensionName);
-@@ -366,6 +413,13 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
+@@ -366,6 +422,16 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
    VulkanFeatures<VkPhysicalDeviceNonSeamlessCubeMapFeaturesEXT,
                   VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_NON_SEAMLESS_CUBE_MAP_FEATURES_EXT>
        features_EXT_non_seamless_cube_map;
@@ -6834,17 +7121,23 @@ index 2408810b..1a188b66 100644
 +      features_EXT_graphics_pipeline_library;  // [native renderer track]
 +  VulkanFeatures<VkPhysicalDevicePresentIdFeaturesKHR, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR>
 +      features_KHR_present_id;  // [IzunaRecomp]
++  VulkanFeatures<VkPhysicalDevicePipelineExecutablePropertiesFeaturesKHR,
++                 VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_EXECUTABLE_PROPERTIES_FEATURES_KHR>
++      features_KHR_pipeline_executable_properties;  // [IzunaRecomp]
 +  VulkanFeatures<VkPhysicalDevicePresentWaitFeaturesKHR, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_FEATURES_KHR>
 +      features_KHR_present_wait;  // [IzunaRecomp]
    VulkanFeatures<VkPhysicalDeviceCustomBorderColorFeaturesEXT,
                   VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_FEATURES_EXT>
        features_EXT_custom_border_color;
-@@ -412,6 +466,13 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
+@@ -412,6 +478,16 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
      if (ext_EXT_non_seamless_cube_map) {
        features_EXT_non_seamless_cube_map.Link(supported_features_2, device_create_info);
      }
 +    if (ext_EXT_graphics_pipeline_library && ext_KHR_pipeline_library) {  // [native renderer track]
 +      features_EXT_graphics_pipeline_library.Link(supported_features_2, device_create_info);
++    }
++    if (ext_KHR_pipeline_executable_properties) {  // [IzunaRecomp]
++      features_KHR_pipeline_executable_properties.Link(supported_features_2, device_create_info);
 +    }
 +    if (ext_KHR_present_id && ext_KHR_present_wait) {  // [IzunaRecomp]
 +      features_KHR_present_id.Link(supported_features_2, device_create_info);
@@ -6853,7 +7146,7 @@ index 2408810b..1a188b66 100644
      if (device->extensions_.ext_EXT_custom_border_color) {
        features_EXT_custom_border_color.Link(supported_features_2, device_create_info);
        properties_EXT_custom_border_color.pNext = properties_2.pNext;
-@@ -524,6 +585,21 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
+@@ -524,6 +600,21 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
  
    device->queue_families_[device->queue_family_graphics_compute_].queues.resize(std::max(
        size_t(1), device->queue_families_[device->queue_family_graphics_compute_].queues.size()));
@@ -6875,7 +7168,7 @@ index 2408810b..1a188b66 100644
    if (device->queue_family_sparse_binding_ != UINT32_MAX) {
      device->queue_families_[device->queue_family_sparse_binding_].queues.resize(std::max(
          size_t(1), device->queue_families_[device->queue_family_sparse_binding_].queues.size()));
-@@ -674,6 +750,7 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
+@@ -674,6 +765,7 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
      XE_UI_VULKAN_FEATURE(robustBufferAccess)
      XE_UI_VULKAN_FEATURE(fullDrawIndexUint32)
      XE_UI_VULKAN_FEATURE(independentBlend)
@@ -6883,7 +7176,7 @@ index 2408810b..1a188b66 100644
      XE_UI_VULKAN_FEATURE(geometryShader)
      XE_UI_VULKAN_FEATURE(tessellationShader)
      XE_UI_VULKAN_FEATURE(sampleRateShading)
-@@ -687,6 +764,12 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
+@@ -687,6 +779,13 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
      XE_UI_VULKAN_FEATURE(shaderCullDistance)
      XE_UI_VULKAN_FEATURE(sparseBinding)
      XE_UI_VULKAN_FEATURE(sparseResidencyBuffer)
@@ -6893,13 +7186,15 @@ index 2408810b..1a188b66 100644
 +    // needs the feature on (Qualcomm's, test52).
 +    XE_UI_VULKAN_FEATURE(shaderStorageImageReadWithoutFormat)
 +    XE_UI_VULKAN_FEATURE(shaderStorageImageWriteWithoutFormat)
++    XE_UI_VULKAN_FEATURE(shaderStorageBufferArrayDynamicIndexing)  // [IzunaRecomp] (izuna-shaders 8: g_Guest[])
    }
  
    if (properties.apiVersion >= VK_MAKE_API_VERSION(0, 1, 2, 0)) {
-@@ -710,6 +793,10 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
+@@ -710,6 +809,11 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
          e.descriptorBindingVariableDescriptorCount = VK_TRUE;
          e.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE;
          e.shaderSampledImageArrayNonUniformIndexing = s.shaderSampledImageArrayNonUniformIndexing;
++        e.shaderStorageBufferArrayNonUniformIndexing = s.shaderStorageBufferArrayNonUniformIndexing;  // [IzunaRecomp]
 +        // [native renderer track] NG2's translated shaders read their
 +        // constants, the fetch constants and guest memory through buffer
 +        // device addresses (vk::RawBufferLoad, XenosRecomp NG2_RECOMP).
@@ -6907,7 +7202,15 @@ index 2408810b..1a188b66 100644
        }
        device->properties_.appRendererFeatures = app_renderer;
        REXLOG_INFO("* app renderer features: {}", app_renderer);
-@@ -801,6 +888,18 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
+@@ -732,6 +836,7 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
+         e.descriptorBindingVariableDescriptorCount = VK_TRUE;
+         e.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE;
+         e.shaderSampledImageArrayNonUniformIndexing = s.shaderSampledImageArrayNonUniformIndexing;
++        e.shaderStorageBufferArrayNonUniformIndexing = s.shaderStorageBufferArrayNonUniformIndexing;  // [IzunaRecomp]
+       }
+       device->properties_.appRendererFeatures = app_renderer;
+       REXLOG_INFO("* app renderer features: {} (VK_EXT_descriptor_indexing)", app_renderer);
+@@ -801,6 +906,25 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
      }
    }
  
@@ -6915,6 +7218,13 @@ index 2408810b..1a188b66 100644
 +    XE_UI_VULKAN_FEATURE_2(features_EXT_graphics_pipeline_library, graphicsPipelineLibrary)
 +  }
 +
++  if (ext_KHR_pipeline_executable_properties) {  // [IzunaRecomp]
++    features_KHR_pipeline_executable_properties.enabled.pipelineExecutableInfo =
++        features_KHR_pipeline_executable_properties.supported.pipelineExecutableInfo;
++    device->properties_.pipelineExecutableInfo =
++        features_KHR_pipeline_executable_properties.supported.pipelineExecutableInfo;
++    if (device->properties_.pipelineExecutableInfo) REXLOG_INFO("* pipelineExecutableInfo");
++  }
 +  if (ext_KHR_present_id && ext_KHR_present_wait) {  // [IzunaRecomp]
 +    features_KHR_present_id.enabled.presentId = features_KHR_present_id.supported.presentId;
 +    features_KHR_present_wait.enabled.presentWait =
@@ -6926,7 +7236,7 @@ index 2408810b..1a188b66 100644
    if (device->extensions_.ext_EXT_custom_border_color) {
      if (with_gpu_emulation) {
        XE_UI_VULKAN_FEATURE_2(features_EXT_custom_border_color, customBorderColors)
-@@ -887,6 +986,11 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
+@@ -887,6 +1011,11 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
  #include <rex/ui/vulkan/functions/device_khr_swapchain.inc>
    }
  #undef XE_UI_VULKAN_FUNCTION_PROMOTED
@@ -7256,7 +7566,7 @@ index 7023dfe9..7985884a 100644
      }
    }
 diff --git a/src/ui/vulkan/vulkan_provider.cpp b/src/ui/vulkan/vulkan_provider.cpp
-index 1352d336..4b0c560d 100644
+index 1352d336..2a676d1a 100644
 --- a/src/ui/vulkan/vulkan_provider.cpp
 +++ b/src/ui/vulkan/vulkan_provider.cpp
 @@ -85,6 +85,24 @@ std::unique_ptr<VulkanProvider> VulkanProvider::Create(const bool with_gpu_emula
@@ -7293,12 +7603,13 @@ index 1352d336..4b0c560d 100644
          VkPhysicalDeviceFeatures supported_features = {};
          ifn.vkGetPhysicalDeviceFeatures(physical_device, &supported_features);
          uint32_t score = 0;
-@@ -167,6 +185,8 @@ std::unique_ptr<VulkanProvider> VulkanProvider::Create(const bool with_gpu_emula
+@@ -167,6 +185,9 @@ std::unique_ptr<VulkanProvider> VulkanProvider::Create(const bool with_gpu_emula
      info.null_descriptor = d.properties().nullDescriptor;
      info.sampler_mirror_clamp_to_edge = d.properties().samplerMirrorClampToEdge;
      info.geometry_shader = d.properties().geometryShader;
 +    info.graphics_pipeline_library = d.properties().graphicsPipelineLibrary;
 +    info.dual_src_blend = d.properties().dualSrcBlend;  // [IzunaRecomp]
++    info.pipeline_executable_info = d.properties().pipelineExecutableInfo;  // [IzunaRecomp]
      rex::external_frame::SetVulkanDevice(&info);
    }
  
@@ -7351,6 +7662,62 @@ index b4e045f3..8ad4df42 100644
  REXCVAR_DEFINE_STRING(resolution, "", "Display",
                        "Common resolution preset for both guest video mode and startup window (for "
                        "example: 720p, 1080p, 1440p, 4k, 1280x720)")
+diff --git a/src/ui/windowed_app_context_sdl.cpp b/src/ui/windowed_app_context_sdl.cpp
+index 7d362953..3831fe91 100644
+--- a/src/ui/windowed_app_context_sdl.cpp
++++ b/src/ui/windowed_app_context_sdl.cpp
+@@ -9,6 +9,8 @@
+  *              See LICENSE file in the project root for full license text.
+  */
+ 
++#include <unordered_map>
++#include <chrono>
+ #include <rex/ui/windowed_app_context_sdl.h>
+ 
+ #include <cstdlib>
+@@ -90,12 +92,42 @@ void SDLWindowedAppContext::PlatformQuitFromUIThread() {
+ }
+ 
+ int SDLWindowedAppContext::RunMainMessageLoop() {
++  // [IzunaRecomp] test65: how many events the UI thread handles, by kind, every
++  // 15 s - the Thor's UI thread spent 60% of a core in clock reads in play.
++  uint64_t n_paint = 0, n_wake = 0, n_other = 0;
++  uint32_t top_type = 0;
++  std::unordered_map<uint32_t, uint64_t> other_types;
++  auto window_start = std::chrono::steady_clock::now();
+   while (!HasQuitFromUIThread()) {
+     SDL_Event event;
+     if (!SDL_WaitEvent(&event)) {
+       REXLOG_ERROR("SDL_WaitEvent failed: {}", SDL_GetError());
+       return EXIT_FAILURE;
+     }
++    if (event.type == paint_event_type_) {
++      ++n_paint;
++    } else if (event.type == wakeup_event_type_) {
++      ++n_wake;
++    } else {
++      ++n_other;
++      ++other_types[event.type];
++    }
++    const auto now = std::chrono::steady_clock::now();
++#if defined(IZUNA_TEST_BUILD)
++    if (now - window_start >= std::chrono::seconds(15)) {
++      uint64_t top = 0;
++      for (const auto& [type, n] : other_types)
++        if (n > top) top = n, top_type = type;
++      REXLOG_INFO("[ui] events in 15 s: {} paints, {} wakeups, {} others (most: type {:#x}, {})", n_paint, n_wake,
++                  n_other, top_type, top);
++      n_paint = n_wake = n_other = 0;
++      other_types.clear();
++      window_start = now;
++    }
++#else
++    (void)now;
++    (void)top_type;
++#endif
+     ProcessEvent(event);
+   }
+   return EXIT_SUCCESS;
 diff --git a/src/ui/windowed_app_main_sdl.cpp b/src/ui/windowed_app_main_sdl.cpp
 index 4f7b3948..b9414557 100644
 --- a/src/ui/windowed_app_main_sdl.cpp
@@ -7831,3 +8198,109 @@ index 00000000..e65b54c3
 +};
 +
 +}  // namespace rex::audio
+diff --git a/src/system/spin_backoff.cpp b/src/system/spin_backoff.cpp
+new file mode 100644
+index 00000000..299a213f
+--- /dev/null
++++ b/src/system/spin_backoff.cpp
+@@ -0,0 +1,100 @@
++// [IzunaRecomp] The back-off of the game's busy-waits (rex/ppc/intrinsics.h):
++// db16cyc, and the head of every loop the recompiler finds only reading
++// memory until another thread changes it (REX_SPIN_WAIT).
++//
++// On the Xbox 360 such a wait had a hardware thread to itself; here it holds
++// a whole core the thread it waits for may need (a 4-core handheld, a phone
++// whose GPU throttles when the chip heats up). So: a pause first (the wait is
++// usually short) for its first 50 us, then a yield (see SpinBackoff; mode 3
++// also sleeps 50 us at a time after 1 ms - too late a wake-up for the game's
++// handoffs, v0.2.2.1). A spin more than 200 us after the thread's last one is
++// a new wait, counted from 0.
++#include <rex/ppc/intrinsics.h>
++
++#include <chrono>
++#include <thread>
++
++#include <rex/cvar.h>
++
++#if defined(_WIN32)
++#include <windows.h>
++#endif
++
++// [IzunaRecomp] v0.2.2.1 frame pacing: which back-off. The owner's Windows
++// log (RTX 4060 laptop): the game's render thread busy 1.5-3 ms a frame
++// outside its vblank wait against 0.2 ms in test44 (v0.2.2's code), frames
++// missing their vblank - "60 fps that feels like 30". A sleep inside one of the
++// game's handoffs between its threads wakes late, many times a frame.
++REXCVAR_DEFINE_INT32(izuna_spin_backoff, 0, "Kernel",
++                     "[IzunaRecomp] The game's busy-waits: 0 auto (2), 1 a pause and a yield "
++                     "every 1024 (v0.2.2), 2 spin 50 us then yield (never sleep), 3 spin 50 us, yield to 1 ms, then "
++                     "50 us sleeps (test61-v0.2.2.1)");
++
++namespace rex::ppc {
++namespace {
++
++int BackoffMode() {
++  const int32_t mode = REXCVAR_GET(izuna_spin_backoff);
++  // (auto: 2 everywhere - the owner's test76, Windows: 600 of 600 frames one
++  // vblank apart, p99 17.5 ms, against 32-46 ms with 3. Android's hub offers 3
++  // as "Sleep (cooler)": ng2_tuning.h.)
++  return mode >= 1 && mode <= 3 ? mode : 2;
++}
++
++void ShortSleep() {
++#if defined(_WIN32)
++  // A plain sleep is a whole timer tick on Windows (1 ms at best): a
++  // high-resolution waitable timer, one per waiting thread, never closed (the
++  // game's threads live as long as the process).
++  thread_local HANDLE timer =
++      CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
++  if (timer) {
++    LARGE_INTEGER due;
++    due.QuadPart = -500;  // 50 us, in 100 ns units (relative)
++    if (SetWaitableTimerEx(timer, &due, 0, nullptr, nullptr, nullptr, 0)) {
++      WaitForSingleObject(timer, 2);
++      return;
++    }
++  }
++  SwitchToThread();
++#else
++  std::this_thread::sleep_for(std::chrono::microseconds(50));
++#endif
++}
++
++}  // namespace
++
++void SpinBackoff() noexcept {
++#if defined(__x86_64__) || defined(_M_X64)
++  __builtin_ia32_pause();
++#elif defined(__aarch64__) || defined(_M_ARM64)
++  __asm__ __volatile__("yield");
++#endif
++  // [IzunaRecomp] By time, not by count (v0.2.2.1): the game's threads hand
++  // work to each other through these waits many times a frame, and a sleep
++  // wakes 60-150 us late (more on Windows) - test62 slept after 128 spins
++  // (~30 us), adding that to every handoff. Now: spin for the first 50 us of a
++  // wait (a handoff answers at once), yield up to 1 ms, sleep only after that
++  // (a vblank, the GPU). A call more than 200 us after the thread's last one
++  // starts a new wait. The sleeps are mode 3 only (izuna_spin_backoff, above):
++  // on a PC the 50 us sleep woke late inside the game's own handoffs.
++  const int mode = BackoffMode();
++  if (mode == 1) {  // (v0.2.2's db16cyc; its busy-wait loop heads had nothing)
++    static thread_local uint32_t count = 0;
++    if ((++count & 1023) == 0) std::this_thread::yield();
++    return;
++  }
++  static thread_local std::chrono::steady_clock::time_point last{}, start{};
++  const auto now = std::chrono::steady_clock::now();
++  if (now - last > std::chrono::microseconds(200)) start = now;
++  const auto waited = now - start;
++  if (mode == 3 && waited >= std::chrono::milliseconds(1)) {
++    ShortSleep();
++    last = std::chrono::steady_clock::now();
++    return;
++  }
++  last = now;
++  if (waited >= std::chrono::microseconds(50)) std::this_thread::yield();
++}
++
++}  // namespace rex::ppc

@@ -17,6 +17,8 @@ void OnGuestSwap(uint32_t device, uint32_t front_texture);
 // native work recorded so far is submitted, so everything the command
 // processor will see has its native work on the GPU already (GPU sync).
 void OnGuestKickoff();
+// [IzunaRecomp] Each draw (the game's render thread): a kickoff every native_auto_kickoff_draws.
+void NoteDrawForKickoff();
 
 // [test] Save the next native frame as native_frames/<name>.rgba (the host
 // test's NG2_CAPTURE, next to the emulated renderer's capture). False when

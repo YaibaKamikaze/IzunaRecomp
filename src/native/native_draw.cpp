@@ -23,12 +23,34 @@
 // Everything stays in VK_IMAGE_LAYOUT_GENERAL, with one full memory barrier
 // between passes: simple first, fast later.
 
+#include "native/native_renderer.h"
 #include "native/native_draw_internal.h"
 #include "izuna/izuna_shaders.h"
 
 REXCVAR_DEFINE_INT32(native_log_frame, 0, "Native renderer",
                      "[native renderer] Log every draw and resolve of this native frame (diagnosis), 0 = off");
 
+// [IzunaRecomp] A light GPU profile: every N seconds, one frame's render
+// passes timed on the GPU (no per-draw logging, no dumps) - where a handheld's
+// GPU time goes (the Steam Deck: ~14.5 ms a frame at 720p, v0.2.2).
+// TEST BUILD DEFAULT 15 (izuna-test55) - back to 0 for a release.
+// [IzunaRecomp] test68: Float24Depth (-1 auto: off on Android, on elsewhere).
+REXCVAR_DEFINE_INT32(native_float24_depth, -1, "Native renderer",
+                     "[IzunaRecomp] Pixel shaders write depth at the Xbox's 20e4 precision: -1 auto (off on Android), 0 off, 1 on");
+// [IzunaRecomp] test66: the game's index buffers drawn as Vulkan ones (GuestIndices).
+REXCVAR_DEFINE_BOOL(native_index_buffers, true, "Native renderer",
+                    "[IzunaRecomp] Draw the game's index buffers as Vulkan index buffers (vertex reuse)");
+// [IzunaRecomp] test65: whole-target clears as the render pass's load operation
+// (keeps Adreno's LRZ on) - see ClearWork.
+REXCVAR_DEFINE_BOOL(native_clear_as_load, true, "Native renderer",
+                    "[IzunaRecomp] Clear whole targets with the render pass's load operation, not inside the pass");
+#if defined(IZUNA_TEST_BUILD)
+#define IZUNA_GPU_PROFILE_DEFAULT 5
+#else
+#define IZUNA_GPU_PROFILE_DEFAULT 0
+#endif
+REXCVAR_DEFINE_INT32(izuna_gpu_profile, IZUNA_GPU_PROFILE_DEFAULT, "Native renderer",
+                     "[IzunaRecomp] Seconds between GPU pass profiles of one frame (0: off)");
 REXCVAR_DEFINE_INT32(native_log_count, 1, "Native renderer",
                      "[native renderer] How many consecutive frames native_log_frame logs (flicker: 2+)")
     .range(1, 8);
@@ -383,6 +405,17 @@ bool CreateImage(VkCommandBuffer cmd, Image& out, VkFormat format, uint32_t w, u
                      : (view_type == VK_IMAGE_VIEW_TYPE_2D && !compressed ? VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT : 0)) |
               extra_usage;
   ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+  // [IzunaRecomp] The formats the mutable image is viewed as - only these
+  // two: a driver told nothing must assume any, and then keeps the image
+  // uncompressed (AMD's DCC, Adreno's UBWC) - every draw into it, every
+  // texture read of it, at full memory bandwidth.
+  const VkFormat view_formats[2] = {VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_SRGB};
+  VkImageFormatListCreateInfo format_list = {VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO};
+  if (ici.flags & VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT) {
+    format_list.viewFormatCount = 2;
+    format_list.pViewFormats = view_formats;
+    ici.pNext = &format_list;
+  }
   StageClock part_clock;
   auto part = [&](int i) {
     if (!g_timed) return;
@@ -516,15 +549,6 @@ void CollectRetired() {
   release(g.retired_descriptors, g.free_descriptors, 0);
   release(g.retired_descriptors_1d, g.free_descriptors_1d, 4);
   release(g.retired_descriptors_cube, g.free_descriptors_cube, 2);
-  size_t k = 0;
-  for (auto& [frame, a] : g.retired_arenas) {
-    if (frame > safe) {
-      g.retired_arenas[k++] = {frame, a};
-      continue;
-    }
-    g.free_arenas.push_back(a);  // [IzunaRecomp] (kept for the next: an allocation in play stalls the worker)
-  }
-  g.retired_arenas.resize(k);
 }
 
 // Textures not bound for ~20 s are dropped (decoded again if used again).
@@ -562,10 +586,71 @@ bool CreateLayout() {
     ci.pBindings = &b;
     if (g.vk.CreateDescriptorSetLayout(g.ctx.device, &ci, nullptr, &g.set_layouts[s]) != VK_SUCCESS) return false;
   }
+  {
+    // [IzunaRecomp] Set 5: vertex constants (4 KB), pixel constants (4 KB),
+    // shared constants (kSharedBytes) - dynamic uniform buffers, offsets per
+    // draw (shader_common.h's g_VertexConstantBlock and the rest).
+    VkDescriptorSetLayoutBinding b[4] = {};  // (3: the fetch constants)
+    for (uint32_t i = 0; i < 4; ++i) {
+      b[i].binding = i;
+      b[i].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
+      b[i].descriptorCount = 1;
+      b[i].stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+    }
+    VkDescriptorSetLayoutCreateInfo ci = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    ci.bindingCount = 4;
+    ci.pBindings = b;
+    if (g.vk.CreateDescriptorSetLayout(g.ctx.device, &ci, nullptr, &g.ubo_layout) != VK_SUCCESS) return false;
+    VkDescriptorPoolSize size = {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 4};
+    VkDescriptorPoolCreateInfo pi = {VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+    pi.maxSets = 1;
+    pi.poolSizeCount = 1;
+    pi.pPoolSizes = &size;
+    if (g.vk.CreateDescriptorPool(g.ctx.device, &pi, nullptr, &g.ubo_pool) != VK_SUCCESS) return false;
+    VkDescriptorSetAllocateInfo ai = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+    ai.descriptorPool = g.ubo_pool;
+    ai.descriptorSetCount = 1;
+    ai.pSetLayouts = &g.ubo_layout;
+    if (g.vk.AllocateDescriptorSets(g.ctx.device, &ai, &g.ubo_set) != VK_SUCCESS) return false;
+  }
+  {
+    // [IzunaRecomp] Set 6: an array of four storage buffers over the game's
+    // memory (binding 0; izuna-shaders 8 index it), one (dynamic) over the
+    // frame's upload space (binding 4).
+    VkDescriptorSetLayoutBinding b[2] = {};
+    b[0].binding = 0;
+    b[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    b[0].descriptorCount = 4;
+    b[0].stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+    b[1].binding = 4;
+    b[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC;
+    b[1].descriptorCount = 1;
+    b[1].stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+    VkDescriptorSetLayoutCreateInfo ci = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    ci.bindingCount = 2;
+    ci.pBindings = b;
+    if (g.vk.CreateDescriptorSetLayout(g.ctx.device, &ci, nullptr, &g.ssbo_layout) != VK_SUCCESS) return false;
+    const VkDescriptorPoolSize sizes[2] = {{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4},
+                                           {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, 1}};
+    VkDescriptorPoolCreateInfo pi = {VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+    pi.maxSets = 1;
+    pi.poolSizeCount = 2;
+    pi.pPoolSizes = sizes;
+    if (g.vk.CreateDescriptorPool(g.ctx.device, &pi, nullptr, &g.ssbo_pool) != VK_SUCCESS) return false;
+    VkDescriptorSetAllocateInfo ai = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+    ai.descriptorPool = g.ssbo_pool;
+    ai.descriptorSetCount = 1;
+    ai.pSetLayouts = &g.ssbo_layout;
+    if (g.vk.AllocateDescriptorSets(g.ctx.device, &ai, &g.ssbo_set) != VK_SUCCESS) return false;
+  }
+  std::array<VkDescriptorSetLayout, 7> all_layouts{};
+  for (size_t i = 0; i < 5; ++i) all_layouts[i] = g.set_layouts[i];
+  all_layouts[5] = g.ubo_layout;
+  all_layouts[6] = g.ssbo_layout;
   VkPushConstantRange pc = {VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 5 * sizeof(uint64_t)};
   VkPipelineLayoutCreateInfo li = {VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
-  li.setLayoutCount = 5;
-  li.pSetLayouts = g.set_layouts.data();
+  li.setLayoutCount = 7;
+  li.pSetLayouts = all_layouts.data();
   li.pushConstantRangeCount = 1;
   li.pPushConstantRanges = &pc;
   if (g.vk.CreatePipelineLayout(g.ctx.device, &li, nullptr, &g.layout) != VK_SUCCESS) return false;
@@ -629,10 +714,66 @@ bool CreateMappedBuffer(VkDeviceSize size, VkBufferUsageFlags usage, State::Mapp
 
 bool CreateUpload() {
   State::MappedBuffer upload;
-  if (!CreateMappedBuffer(kFrameUpload * 2, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, upload)) return false;
+  // (+ one constant block: a uniform-buffer window that starts near the end
+  // must not run past the buffer - kUboWindow below)
+  if (!CreateMappedBuffer(kFrameUpload * 2 + kUboWindow,
+                          VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
+                              VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+                          upload)) {
+    return false;
+  }
   g.upload = upload.buffer;
   g.upload_mapped = upload.mapped;
   g.upload_address = upload.address;
+  {
+    // [IzunaRecomp] Set 5's three uniform buffers: the upload buffer, a
+    // constant block's window each; the draw gives the offsets.
+    const VkDescriptorBufferInfo bi[4] = {{g.upload, 0, kVsBytes}, {g.upload, 0, kPsBytes}, {g.upload, 0, kSharedBytes},
+                                          {g.upload, 0, kFetchBytes}};
+    VkWriteDescriptorSet w = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    w.dstSet = g.ubo_set;
+    w.dstBinding = 0;
+    w.descriptorCount = 4;
+    w.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
+    w.pBufferInfo = bi;
+    g.vk.UpdateDescriptorSets(g.ctx.device, 1, &w, 0, nullptr);
+  }
+  {
+    // [IzunaRecomp] Set 6. The game's memory in chunks the device's largest
+    // storage buffer holds: one of 512 MB where it can (desktop drivers),
+    // four of 128 MB on Adreno (maxStorageBufferRange 2^27).
+    auto props_fn = reinterpret_cast<PFN_vkGetPhysicalDeviceProperties>(
+        g.ctx.get_instance_proc_addr(g.ctx.instance, "vkGetPhysicalDeviceProperties"));
+    VkPhysicalDeviceProperties props = {};
+    if (props_fn) props_fn(g.ctx.physical_device, &props);
+    const uint64_t max_range = props.limits.maxStorageBufferRange;
+    g.guest_shift = max_range >= (1ull << 29) ? 29 : max_range >= (1ull << 28) ? 28 : 27;
+    if (!g.ctx.guest_buffer || max_range < (1ull << 27)) {
+      REXLOG_ERROR("[native] drawing off: the game's memory cannot be bound as storage buffers (largest {} bytes)",
+                   max_range);
+      return false;
+    }
+    VkDescriptorBufferInfo bi[5];
+    for (uint32_t i = 0; i < 4; ++i) {
+      const uint64_t chunk = (uint64_t(i) << g.guest_shift) < 0x20000000ull ? i : 0;  // (spare bindings: chunk 0)
+      bi[i] = {g.ctx.guest_buffer, VkDeviceSize(chunk << g.guest_shift), VkDeviceSize(1ull << g.guest_shift)};
+    }
+    bi[4] = {g.upload, 0, kFrameUpload};
+    VkWriteDescriptorSet w[2] = {{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}, {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}};
+    w[0].dstSet = g.ssbo_set;
+    w[0].dstBinding = 0;
+    w[0].descriptorCount = 4;
+    w[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    w[0].pBufferInfo = bi;
+    w[1].dstSet = g.ssbo_set;
+    w[1].dstBinding = 4;
+    w[1].descriptorCount = 1;
+    w[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC;
+    w[1].pBufferInfo = &bi[4];
+    g.vk.UpdateDescriptorSets(g.ctx.device, 2, w, 0, nullptr);
+    REXLOG_INFO("[native] the game's memory as storage buffers: {} of {} MB (largest storage buffer {} MB)",
+                0x20000000u >> g.guest_shift, (1u << g.guest_shift) >> 20, max_range >> 20);
+  }
   // The depth resolve scratch buffer: one whole target (pitch x kRtHeight, 4 bytes).
   VkBufferCreateInfo sci = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
   sci.size = VkDeviceSize(ToHostSize(2048u, RenderScale())) * ToHostSize(kRtHeight, RenderScale()) * 4;
@@ -672,9 +813,57 @@ void ReadPassTimes() {
   g.pass_frame = 0;
   g.pass_count = 0;
   std::vector<uint64_t> t(n);
+  const uint32_t draws = g.draw_count;
+  g.draw_count = 0;
   if (n < 2 || g.vk.GetQueryPoolResults(g.ctx.device, g.pass_queries, 0, n, n * sizeof(uint64_t), t.data(),
                                         sizeof(uint64_t), VK_QUERY_RESULT_64_BIT) != VK_SUCCESS) {
     return;
+  }
+  // [IzunaRecomp] test71: the draws (each one's time: since the draw or the
+  // pass before it - timestamps between draws make a tiler finish each
+  // draw first, so the sum runs high; which draws cost is what this shows).
+  std::vector<uint64_t> dt(draws);
+  if (draws >= 2 && g.vk.GetQueryPoolResults(g.ctx.device, g.draw_queries, 0, draws, draws * sizeof(uint64_t),
+                                             dt.data(), sizeof(uint64_t), VK_QUERY_RESULT_64_BIT) == VK_SUCCESS) {
+    struct D {
+      double us;
+      uint32_t i;
+    };
+    std::vector<D> ds;
+    std::map<uint64_t, std::pair<double, uint32_t>> by_vs;
+    for (uint32_t i = 1; i < draws; ++i) {
+      const double us = dt[i] > dt[i - 1] ? double(dt[i] - dt[i - 1]) * g.timestamp_ns / 1e3 : 0.0;
+      ds.push_back({us, i});
+      auto& v = by_vs[g.draw_labels[i].vs];
+      v.first += us;
+      ++v.second;
+    }
+    std::vector<double> sorted;
+    for (const D& d : ds) sorted.push_back(d.us);
+    std::sort(sorted.begin(), sorted.end());
+    double sum = 0;
+    for (double v : sorted) sum += v;
+    std::sort(ds.begin(), ds.end(), [](const D& a, const D& b) { return a.us > b.us; });
+    std::string out = fmt::format("[native] GPU time per draw (frame {}): {} draws, {:.2f} ms in all, median {:.1f} us, "
+                                  "90% {:.1f} us; the costliest:",
+                                  g.frame_number, ds.size(), sum / 1e3, sorted[sorted.size() / 2],
+                                  sorted[sorted.size() * 9 / 10]);
+    for (size_t k = 0; k < ds.size() && k < 15; ++k) {
+      const State::DrawLabel& l = g.draw_labels[ds[k].i];
+      out += fmt::format("\n[native]   {:.0f} us: VS {:016X} PS {:016X} prim {} {} {} in pass {} -> {:03X}", ds[k].us,
+                         l.vs, l.ps, l.prim, l.vertices, l.indexed ? "indices" : "vertices", l.pass, l.target);
+      if (k < 3)  // (test73: the costliest draws' state)
+        out += fmt::format(" | spec {:X} raster {:X} blend {:08X} depth {:08X} format {} | {} textures, largest {}x{}, "
+                           "anisotropy {}",
+                           l.spec, l.raster, l.blend, l.depth_control, l.color_format, l.textures, l.tex_w, l.tex_h,
+                           l.aniso >= 2 ? fmt::format("{}x", 1u << (l.aniso - 1)) : std::string("off"));
+    }
+    std::vector<std::pair<uint64_t, std::pair<double, uint32_t>>> vss(by_vs.begin(), by_vs.end());
+    std::sort(vss.begin(), vss.end(), [](auto& a, auto& b) { return a.second.first > b.second.first; });
+    out += "\n[native]   by vertex shader:";
+    for (size_t k = 0; k < vss.size() && k < 10; ++k)
+      out += fmt::format(" {:016X} {:.2f} ms/{}", vss[k].first, vss[k].second.first / 1e3, vss[k].second.second);
+    REXLOG_INFO("{}", out);
   }
   struct Pass {
     double ms;
@@ -690,7 +879,8 @@ void ReadPassTimes() {
     top += fmt::format("\n[native]   {:.3f} ms: pass {} ({} draws) -> {}", passes[i].ms, passes[i].index, l.draws,
                        l.dest ? fmt::format("{:08X} {}x{}", l.dest, l.width, l.height) : std::string("frame end"));
   }
-  REXLOG_INFO("[native] GPU time of the logged frame: {:.2f} ms in {} passes; the costliest:{}", total, n - 1, top);
+  REXLOG_INFO("[native] GPU time of a frame (frame {}): {:.2f} ms in {} passes; the costliest:{}", g.frame_number,
+              total, n - 1, top);
 }
 
 
@@ -765,11 +955,26 @@ VkCommandBuffer Frame() {
   }
   for (auto& b : g.last_block) b.clear();
   ReadPassTimes();
-  if (g.log_frame && g.pass_queries && !g.pass_frame) {
+  bool profile_frame = false;  // [IzunaRecomp] (izuna_gpu_profile)
+  {
+    static auto last = std::chrono::steady_clock::now();
+    const int32_t every = REXCVAR_GET(izuna_gpu_profile);
+    if (every > 0 && !g.log_frame && std::chrono::steady_clock::now() - last >= std::chrono::seconds(every)) {
+      last = std::chrono::steady_clock::now();
+      profile_frame = true;
+    }
+  }
+  if ((g.log_frame || profile_frame) && g.pass_queries && !g.pass_frame) {
     g.vk.CmdResetQueryPool(g.cmd, g.pass_queries, 0, 256);
     g.vk.CmdWriteTimestamp(g.cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, g.pass_queries, 0);
     g.pass_count = 1;
     g.pass_labels = {};
+    if (profile_frame && g.draw_queries) {  // [IzunaRecomp] test71: each draw too
+      g.vk.CmdResetQueryPool(g.cmd, g.draw_queries, 0, State::kDrawQueries);
+      g.vk.CmdWriteTimestamp(g.cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, g.draw_queries, 0);
+      g.draw_count = 1;
+      g.draw_labels.assign(State::kDrawQueries, State::DrawLabel{});
+    }
   }
   // Placeholders and bindless sets are made once, in the first frame.
   if (g.placeholders.empty()) {
@@ -838,38 +1043,50 @@ uint64_t Upload(int which, const void* data, uint32_t size) {
 // frame (test38) cost the worker ~5 ms a frame in heavy scenes. A cached list
 // is checked against its indices' hash as textures are (every
 // native_texture_recheck_frames frames; every frame once they changed).
-constexpr VkDeviceSize kListArenaBytes = 16u << 20;
-constexpr size_t kMaxListArenas = 4;
-
-uint64_t ResetStripToList(const Device& d, const uint32_t index_info[4], uint32_t count, uint32_t* vertices) {
+// [IzunaRecomp] test62: the lists are kept in ordinary (cached) memory. test59
+// to test61 kept them in a mapped Vulkan buffer and copied them from there into
+// the frame's upload space each draw - on the Steam Deck that memory is
+// uncached, and reading it back took most of the render thread (18-27 fps).
+// [IzunaRecomp] test66: also the game's plain index buffers, as little-endian
+// copies drawn through a Vulkan index buffer (GuestIndices): the vertex shader
+// had read each draw's indices itself (ng2VertexIndex) in a non-indexed draw,
+// so the GPU could never reuse a transformed vertex - every vertex of a mesh
+// ran its shader once per triangle using it (3-6 times). Cheap on the Deck's
+// GPU, the frame's main cost on Adreno (the scene pass 33 ms on the Thor, and
+// slower still in tile mode, which runs vertex shaders twice).
+// `to_list`: a primitive-reset strip, turned into a triangle list.
+bool GuestIndices(const Device& d, const uint32_t index_info[4], uint32_t count, bool to_list, IndexList* result) {
   const bool wide = index_info[1] & 1;
   const uint32_t endian = (index_info[1] >> 1) & 3;
   const uint32_t start = index_info[0] & 0x1FFFFFFFu, bytes = count * (wide ? 4u : 2u);
-  if (!count || start + bytes + 4 > 0x20000000u) return 0;
+  if (!count || start + bytes + 4 > 0x20000000u) return false;
   // (32-bit indices: the hardware compares their low 24 bits - the SDK's
   // primitive processor)
   const uint32_t compare_mask = wide ? 0xFFFFFFu : 0xFFFFu;
-  const uint32_t reset = d.Reg(VGT_MULTI_PRIM_IB_RESET_INDX) & compare_mask;
+  const uint32_t reset = to_list ? d.Reg(VGT_MULTI_PRIM_IB_RESET_INDX) & compare_mask : 0xFFFFFFFFu;
   const uint8_t* src = REX_KERNEL_MEMORY()->TranslatePhysical<const uint8_t*>(start & ~3u);
   const uint32_t skew = start & 3u;
-  const uint32_t key_words[4] = {start, count, index_info[1] & 0xF, reset};
-  State::StripList& e = g.strip_lists[XXH3_64bits(key_words, sizeof(key_words))];
+  const uint32_t key_words[4] = {start, count, (index_info[1] & 0xF) | (to_list ? 0x100u : 0u), reset};
+  const uint64_t key = XXH3_64bits(key_words, sizeof(key_words));
+  State::StripList& e = g.strip_lists[key];
+  auto done = [&](State::StripList& l) {
+    result->wide = l.wide;
+    result->count = l.count;
+    result->data = l.wide ? static_cast<const void*>(l.list32.data()) : static_cast<const void*>(l.list16.data());
+    return l.count != 0;
+  };
   const uint64_t every = e.dynamic ? 1 : uint64_t(std::max(REXCVAR_GET(native_texture_recheck_frames), 1));
-  if (e.address && g.frame_number - e.checked_frame < every) {
-    *vertices = e.vertices;
-    return e.address;
-  }
+  if (e.count && g.frame_number - e.checked_frame < every) return done(e);
   const uint64_t hash = XXH3_64bits(src + skew, bytes);
   e.checked_frame = g.frame_number;
-  if (e.address && e.hash == hash) {
+  if (e.count && e.hash == hash) {
     if (e.dynamic && ++e.steady >= State::kSettleChecks) {
       e.dynamic = false;  // (settled: the periodic checks again)
       e.steady = 0;
     }
-    *vertices = e.vertices;
-    return e.address;
+    return done(e);
   }
-  if (e.address) {
+  if (e.count) {
     e.dynamic = true;
     e.steady = 0;
   }
@@ -883,51 +1100,47 @@ uint64_t ResetStripToList(const Device& d, const uint32_t index_info[4], uint32_
     else if (endian == 3) w = (w >> 16) | (w << 16);
     return wide ? w : (a & 2u) ? (w >> 16) : (w & 0xFFFFu);
   };
-  auto& out = g.list_scratch;
-  out.clear();
-  uint32_t a = 0, b = 0, in_strip = 0;
-  for (uint32_t i = 0; i < count; ++i) {
-    const uint32_t v = index(i);
-    if ((v & compare_mask) == reset) {
-      in_strip = 0;
-      continue;
+  g.list_bytes -= e.list32.capacity() * 4 + e.list16.capacity() * 2;
+  e.wide = wide;
+  e.list32.clear();
+  e.list16.clear();
+  auto push = [&](uint32_t v) {
+    if (wide) e.list32.push_back(v);
+    else e.list16.push_back(uint16_t(v));
+  };
+  if (to_list) {
+    uint32_t a = 0, b = 0, in_strip = 0;
+    for (uint32_t i = 0; i < count; ++i) {
+      const uint32_t v = index(i);
+      if ((v & compare_mask) == reset) {
+        in_strip = 0;
+        continue;
+      }
+      if (in_strip >= 2) {  // triangle in_strip - 2 of this strip: odd ones swap to keep the winding
+        const bool odd = in_strip & 1;
+        push(a);
+        push(odd ? v : b);
+        push(odd ? b : v);
+      }
+      a = b;
+      b = v;
+      ++in_strip;
     }
-    if (in_strip >= 2) {  // triangle in_strip - 2 of this strip: odd ones swap to keep the winding
-      const bool odd = in_strip & 1;
-      out.push_back(a);
-      out.push_back(odd ? v : b);
-      out.push_back(odd ? b : v);
-    }
-    a = b;
-    b = v;
-    ++in_strip;
+  } else {
+    if (wide) e.list32.reserve(count);
+    else e.list16.reserve(count);
+    for (uint32_t i = 0; i < count; ++i) push(index(i));
   }
-  e.address = 0;
-  e.vertices = uint32_t(out.size());
-  const VkDeviceSize size = (VkDeviceSize(out.size()) * 4 + 255) & ~VkDeviceSize(255);
-  if (!size || size > kListArenaBytes) return 0;
-  if (g.list_arenas.empty() || g.list_used + size > kListArenaBytes) {
-    if (g.list_arenas.size() >= kMaxListArenas) {  // all full: drop every list, convert again as drawn
-      for (auto& arena : g.list_arenas) g.retired_arenas.emplace_back(g.frame_number, arena);
-      g.list_arenas.clear();
-      for (auto& [k, list] : g.strip_lists) list.address = 0;
-    }
-    State::MappedBuffer arena;
-    if (!g.free_arenas.empty()) {
-      arena = g.free_arenas.back();
-      g.free_arenas.pop_back();
-    } else if (!CreateMappedBuffer(kListArenaBytes, 0, arena)) {
-      return 0;
-    }
-    g.list_arenas.push_back(arena);
-    g.list_used = 0;
+  e.count = uint32_t(wide ? e.list32.size() : e.list16.size());
+  g.list_bytes += e.list32.capacity() * 4 + e.list16.capacity() * 2;
+  if (g.list_bytes > State::kMaxListBytes) {  // (too many kept: all dropped, converted again as drawn -
+    // this one stays until its draw has copied it)
+    State::StripList keep = std::move(e);
+    g.strip_lists.clear();
+    g.list_bytes = keep.list32.capacity() * 4 + keep.list16.capacity() * 2;
+    return done(g.strip_lists[key] = std::move(keep));
   }
-  const State::MappedBuffer& arena = g.list_arenas.back();
-  std::memcpy(arena.mapped + g.list_used, out.data(), out.size() * 4);
-  e.address = arena.address + g.list_used;
-  g.list_used += size;
-  *vertices = e.vertices;
-  return e.address;
+  return done(e);
 }
 
 // The shader module for a shader cache hash (made once, kept in g.shaders;
@@ -973,6 +1186,55 @@ size_t ShaderEntryCount() { return g_shaderCacheEntryCount; }
 const uint32_t* ShaderLayouts() { return g_shaderVertexLayouts; }
 #endif
 
+// [IzunaRecomp] test68: whether pixel shaders write depth at the Xenos 20e4
+// precision (test37). Every pixel shader then writes its depth, and a GPU
+// whose early depth test does not survive a shader's depth write - Adreno,
+// Turnip and Qualcomm's alike - then shades every hidden pixel of the scene
+// before testing it (and keeps LRZ off). test37 added it for a shop-window
+// flicker that turned out to be texture aliasing; it is kept on the PC
+// (exact Xbox depth ties), off on Android.
+bool Float24Depth() {
+  const int32_t v = REXCVAR_GET(native_float24_depth);
+  if (v >= 0) return v != 0;
+#if defined(__ANDROID__)
+  return false;
+#else
+  return true;
+#endif
+}
+
+// A pixel shader's depth write taken out (Float24Depth off): the shaders that
+// do not export a depth of their own declare it only to write the rounded
+// value (SV_DepthLessEqual: OpExecutionMode DepthLess). Their stores to the
+// FragDepth output and the DepthReplacing / DepthLess modes are removed;
+// shaders that export depth (DepthReplacing alone) are left as they are.
+void StripDepthWrite(std::vector<uint32_t>& code) {
+  constexpr uint32_t kOpExecutionMode = 16, kOpDecorate = 71, kOpStore = 62;
+  constexpr uint32_t kBuiltIn = 11, kFragDepth = 22, kDepthReplacing = 12, kDepthLess = 15;
+  if (code.size() < 5) return;
+  uint32_t frag_depth = 0;
+  bool depth_less = false;
+  for (size_t i = 5; i < code.size();) {
+    const uint32_t words = code[i] >> 16, op = code[i] & 0xFFFF;
+    if (!words || i + words > code.size()) return;
+    if (op == kOpDecorate && words >= 4 && code[i + 2] == kBuiltIn && code[i + 3] == kFragDepth) frag_depth = code[i + 1];
+    if (op == kOpExecutionMode && words >= 3 && code[i + 2] == kDepthLess) depth_less = true;
+    i += words;
+  }
+  if (!frag_depth || !depth_less) return;
+  std::vector<uint32_t> out(code.begin(), code.begin() + 5);
+  out.reserve(code.size());
+  for (size_t i = 5; i < code.size();) {
+    const uint32_t words = code[i] >> 16, op = code[i] & 0xFFFF;
+    const bool drop = (op == kOpExecutionMode && words >= 3 &&
+                       (code[i + 2] == kDepthReplacing || code[i + 2] == kDepthLess)) ||
+                      (op == kOpStore && words >= 3 && code[i + 1] == frag_depth);
+    if (!drop) out.insert(out.end(), code.begin() + i, code.begin() + i + words);
+    i += words;
+  }
+  code.swap(out);
+}
+
 const ShaderInfo* ShaderByHash(uint64_t hash, bool* missing) {
   auto s = g.shaders.find(hash);
   if (s != g.shaders.end()) return s->second.module ? &s->second : nullptr;
@@ -987,6 +1249,7 @@ const ShaderInfo* ShaderByHash(uint64_t hash, bool* missing) {
     const uint8_t* encoded = g.spirv.data() + e->spirvOffset;
     std::vector<uint32_t> code(smolv::GetDecodedBufferSize(encoded, e->spirvSize) / 4);
     if (!code.empty() && smolv::Decode(encoded, e->spirvSize, code.data(), code.size() * 4)) {
+      if (!Float24Depth()) StripDepthWrite(code);
       VkShaderModuleCreateInfo ci = {VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
       ci.codeSize = code.size() * 4;
       ci.pCode = code.data();
@@ -1090,9 +1353,11 @@ const Image* Target(uint32_t base, uint32_t format, uint32_t pitch, bool depth) 
   return &g.targets.emplace(key, img).first->second;
 }
 
-// Begin rendering to these targets, unless already.
-void Bind(const std::array<const Image*, 4>& colors, const Image* depth) {
-  if (g.rendering && colors == g.bound_colors && depth == g.bound_depth) return;
+// Begin rendering to these targets, unless already. With `clear`: a new pass
+// that starts with the clear (its targets by clear->flags) as its load
+// operation - see ClearWork.
+void Bind(const std::array<const Image*, 4>& colors, const Image* depth, const PendingClear* clear = nullptr) {
+  if (!clear && g.rendering && colors == g.bound_colors && depth == g.bound_depth) return;
   EndRendering();
   std::array<VkRenderingAttachmentInfo, 4> ca{};
   uint32_t count = 0, w = 0, h = 0;
@@ -1103,6 +1368,10 @@ void Bind(const std::array<const Image*, 4>& colors, const Image* depth) {
     ca[i].imageView = colors[i]->view;
     ca[i].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
     ca[i].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    if (clear && (clear->flags & (1u << i))) {
+      ca[i].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+      for (int c = 0; c < 4; ++c) ca[i].clearValue.color.float32[c] = clear->color[c];
+    }
     ca[i].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     w = w ? std::min(w, colors[i]->width) : colors[i]->width;
     h = h ? std::min(h, colors[i]->height) : colors[i]->height;
@@ -1116,15 +1385,29 @@ void Bind(const std::array<const Image*, 4>& colors, const Image* depth) {
     w = w ? std::min(w, depth->width) : depth->width;
     h = h ? std::min(h, depth->height) : depth->height;
   }
+  // (depth and stencil apart: a clear may take one and keep the other)
+  VkRenderingAttachmentInfo sa = da;
+  if (depth && clear) {
+    const VkClearDepthStencilValue v = {float(std::clamp(clear->z, 0.0, 1.0)), clear->stencil & 0xFF};
+    if (clear->flags & 0x10) {
+      da.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+      da.clearValue.depthStencil = v;
+    }
+    if (clear->flags & 0x20) {
+      sa.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+      sa.clearValue.depthStencil = v;
+    }
+  }
   VkRenderingInfo ri = {VK_STRUCTURE_TYPE_RENDERING_INFO};
   ri.renderArea = {{0, 0}, {w, h}};
   ri.layerCount = 1;
   ri.colorAttachmentCount = count;
   ri.pColorAttachments = ca.data();
   ri.pDepthAttachment = depth ? &da : nullptr;
-  ri.pStencilAttachment = depth ? &da : nullptr;
+  ri.pStencilAttachment = depth ? &sa : nullptr;
   g.vk.CmdBeginRendering(g.cmd, &ri);
   g.rendering = true;
+  g.pass_draws = 0;
   g.bound_colors = colors;
   g.bound_depth = depth;
 }
@@ -1209,6 +1492,7 @@ std::atomic<bool> g_watched_seen{false};  // native_watch_tex
 void Draw(const Device& d, uint32_t xenos_primitive, uint32_t count, const uint32_t index_info[4],
           uint64_t up_data, uint32_t up_fetch1, const uint8_t* layout, bool layout_ok) {
   ++g.census[xenos_primitive & 31];
+  g.prof_aniso = g.prof_tex_w = g.prof_tex_h = g.prof_textures = 0;
   if (!Frame()) return;
   StageClock clock;
   ++t_timing.draws;
@@ -1220,7 +1504,8 @@ void Draw(const Device& d, uint32_t xenos_primitive, uint32_t count, const uint3
   }
   VkPrimitiveTopology topology;
   uint32_t vertices = count, expand = 0;
-  uint64_t strip_list = 0;  // (expansion 2: ResetStripToList)
+  IndexList indices;  // [IzunaRecomp] (test66: drawn through a Vulkan index buffer; expansion 2 too)
+  bool indexed = false;
   switch (xenos_primitive) {
     case 1: topology = VK_PRIMITIVE_TOPOLOGY_POINT_LIST; break;
     case 2: topology = VK_PRIMITIVE_TOPOLOGY_LINE_LIST; break;
@@ -1232,8 +1517,9 @@ void Draw(const Device& d, uint32_t xenos_primitive, uint32_t count, const uint3
       // (primitive reset; a BeginVertices draw's indices are in the upload
       // ring, not guest memory: those keep the NaN reset vertex)
       if (index_info[0] != 0xFFFFFFFFu && (index_info[1] & 8) && !up_data) {
-        strip_list = ResetStripToList(d, index_info, count, &vertices);
-        if (!strip_list) return;
+        if (!GuestIndices(d, index_info, count, true, &indices)) return;
+        vertices = indices.count;
+        indexed = true;
         topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
         expand = 2;
       }
@@ -1253,6 +1539,16 @@ void Draw(const Device& d, uint32_t xenos_primitive, uint32_t count, const uint3
     default:
       ++g.stats.rect;  // (line loops, polygons, ...: later)
       return;
+  }
+  // [IzunaRecomp] test66: the game's index buffer as a Vulkan one (GuestIndices) -
+  // not for quad lists (expanded by the shader), primitive-reset fans and the
+  // like (their reset vertex is the shader's), or indices handed over in the
+  // upload ring (BeginIndexedVertices).
+  if (!indexed && expand == 0 && index_info[0] != 0xFFFFFFFFu && !(index_info[1] & 8) && !up_data &&
+      REXCVAR_GET(native_index_buffers)) {
+    if (!GuestIndices(d, index_info, count, false, &indices)) return;
+    vertices = indices.count;
+    indexed = true;
   }
   const ShaderInfo* vs = Shader(d.Field(kVertexShader));
   if (!vs) {
@@ -1393,11 +1689,43 @@ void Draw(const Device& d, uint32_t xenos_primitive, uint32_t count, const uint3
   putf(928, (ox + half) * 2.0f / w - 1.0f);
   putf(932, -((oy + half) * 2.0f / h - 1.0f));
   putf(936, oz);
-  for (uint32_t i = 0; i < 4; ++i) put(960 + i * 4, index_info[i]);
+  if (indexed) {
+    // (to the shader a draw without indices: the vertex number it gets is
+    // the index itself, to which it adds the index offset)
+    put(960, 0xFFFFFFFFu);
+    put(964, 0);
+    put(968, index_info[2]);
+    put(972, 0);
+  } else {
+    for (uint32_t i = 0; i < 4; ++i) put(960 + i * 4, index_info[i]);
+    if (expand) put(972, expand);
+  }
   put(976, 1);  // (ng2MemExport writes guest memory: the memory exports are ours)
   put(980, d.Reg(VGT_MULTI_PRIM_IB_RESET_INDX) & ((index_info[1] & 1) ? 0xFFFFFFFFu : 0xFFFFu));
-  if (expand) put(972, expand);
-  if (strip_list) std::memcpy(shared + 1016, &strip_list, 8);
+  // [IzunaRecomp] Set 6's fields (shader_common.h): the chunk size; a
+  // BeginVertices draw's vertices and a strip index list, as offsets into the
+  // frame's upload space (binding 4 covers the frame's half).
+  const uint64_t frame_base = g.upload_address + VkDeviceSize(g.frame_index) * kFrameUpload;
+  put(0, g.guest_shift);
+  if (up_data) {
+    put(4, uint32_t(up_data - frame_base));
+    put(8, 1);
+  }
+  VkDeviceSize index_buffer_offset = 0;
+  if (indexed) {
+    // (the indices, converted once and kept in ordinary memory, copied into
+    // the frame's upload space and drawn from there: a plain copy - the
+    // conversion stays cached)
+    const size_t bytes = size_t(vertices) * (indices.wide ? 4u : 2u);
+    uint64_t at = 0;
+    uint8_t* dst = UploadSpace(uint32_t(bytes), &at);
+    if (!dst) {
+      ++g.stats.upload_full;
+      return;
+    }
+    std::memcpy(dst, indices.data, bytes);
+    index_buffer_offset = VkDeviceSize(at - g.upload_address);
+  }
   // Vertex fetches: the fields of each of the vertex shader's vfetch
   // instructions as they are now in guest memory (Direct3D patches them for
   // the bound vertex declaration), for ng2VertexFetchK.
@@ -1438,6 +1766,19 @@ void Draw(const Device& d, uint32_t xenos_primitive, uint32_t count, const uint3
                          : mip_base_slots >> slot & 1 ? 3u : 0u;
     const bool aniso_off = (aniso_off_slots >> slot) & 1;
     const bool own_sampler = filter || mip || aniso_off;  // (the instruction overrides the constant's sampler)
+    if (g.draw_count) {  // [IzunaRecomp] (test73: a profiled frame - the draw's textures and their anisotropy)
+      rex::graphics::xenos::xe_gpu_texture_fetch_t tf;
+      std::memcpy(&tf, fc, sizeof(tf));
+      int32_t aniso = aniso_off ? 0 : int32_t(tf.aniso_filter);
+      if (!aniso_off && REXCVAR_GET(native_anisotropic) >= 0) aniso = std::min(REXCVAR_GET(native_anisotropic), 4) + 1;
+      g.prof_aniso = std::max<uint32_t>(g.prof_aniso, uint32_t(std::max(aniso, 0)));
+      ++g.prof_textures;
+      if (tf.dimension == rex::graphics::xenos::DataDimension::k2DOrStacked &&
+          uint64_t(tf.size_2d.width + 1) * (tf.size_2d.height + 1) > uint64_t(g.prof_tex_w) * g.prof_tex_h) {
+        g.prof_tex_w = tf.size_2d.width + 1;
+        g.prof_tex_h = tf.size_2d.height + 1;
+      }
+    }
     // TextureSign per channel (fc[0] bits 2-9): 2 biased (x2-1), 3 gamma. The
     // shaders apply them for slots 0-15 (applyFetchSign: SharedConstants +
     // 392 rgb biased / gamma at bit 16 + slot, + 388 alpha biased at bit 16 +
@@ -1592,7 +1933,7 @@ void Draw(const Device& d, uint32_t xenos_primitive, uint32_t count, const uint3
   if (g.depth_clamp && ((d.Reg(PA_CL_CLIP_CNTL) >> 16) & 1)) key.raster |= 16;
   // A 20e4 (float 24) depth target in use: depth at its precision (the pixel
   // shaders' epilogue; depth-only draws: depth24_fs).
-  if (depth && ((d.Reg(RB_DEPTH_INFO) >> 16) & 1) && (depth_control & 6)) key.spec |= kSpecFloat24Depth;
+  if (depth && ((d.Reg(RB_DEPTH_INFO) >> 16) & 1) && (depth_control & 6) && Float24Depth()) key.spec |= kSpecFloat24Depth;
   // Alpha test (RB_COLORCONTROL): with SPEC_CONSTANT_ALPHA_TEST the shaders
   // compare alpha with RB_ALPHA_REF (SharedConstants + 364) by the test's own
   // function (+ 952, the fork's ng2AlphaTest). Before test40 only GREATER /
@@ -1684,6 +2025,24 @@ void Draw(const Device& d, uint32_t xenos_primitive, uint32_t count, const uint3
     if (all || cmask != dc.cmask) g.CmdSetStencilCompareMask(g.cmd, VK_STENCIL_FACE_FRONT_AND_BACK, dc.cmask = cmask);
     if (all || wmask != dc.wmask) g.CmdSetStencilWriteMask(g.cmd, VK_STENCIL_FACE_FRONT_AND_BACK, dc.wmask = wmask);
   }
+  {
+    // [IzunaRecomp] The constant blocks as set 5's dynamic offsets (they are
+    // all in the upload buffer, 256-byte aligned: UploadSpace).
+    const uint32_t offsets[4] = {uint32_t(vs_address - g.upload_address), uint32_t(ps_address - g.upload_address),
+                                 uint32_t(shared_address - g.upload_address),
+                                 uint32_t(fetch_address - g.upload_address)};
+    if (!dc.ubo_valid || std::memcmp(offsets, dc.ubo_offsets, sizeof(offsets)) != 0) {
+      g.vk.CmdBindDescriptorSets(g.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g.layout, 5, 1, &g.ubo_set, 4, offsets);
+      std::memcpy(dc.ubo_offsets, offsets, sizeof(offsets));
+      dc.ubo_valid = true;
+    }
+    const uint32_t frame_offset = uint32_t(VkDeviceSize(g.frame_index) * kFrameUpload);
+    if (!dc.ssbo_valid || dc.ssbo_offset != frame_offset) {
+      g.vk.CmdBindDescriptorSets(g.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g.layout, 6, 1, &g.ssbo_set, 1, &frame_offset);
+      dc.ssbo_offset = frame_offset;
+      dc.ssbo_valid = true;
+    }
+  }
   const uint64_t push[5] = {vs_address, ps_address, shared_address, up_data ? up_data : g.ctx.guest_address,
                             fetch_address};
   if (!dc.push_valid || std::memcmp(push, dc.push, sizeof(push)) != 0) {
@@ -1746,7 +2105,35 @@ void Draw(const Device& d, uint32_t xenos_primitive, uint32_t count, const uint3
     g.vk.CmdSetDepthBias(g.cmd, bias[0], bias[1], bias[2]);
     std::memcpy(dc.bias, bias, sizeof(bias));
   }
-  g.vk.CmdDraw(g.cmd, vertices, 1, 0, 0);
+  if (indexed) {
+    g.vk.CmdBindIndexBuffer(g.cmd, g.upload, index_buffer_offset,
+                            indices.wide ? VK_INDEX_TYPE_UINT32 : VK_INDEX_TYPE_UINT16);
+    g.vk.CmdDrawIndexed(g.cmd, vertices, 1, 0, 0, 0);
+  } else {
+    g.vk.CmdDraw(g.cmd, vertices, 1, 0, 0);
+  }
+  ++g.pass_draws;
+  if (g.draw_count && g.draw_count < State::kDrawQueries && !g.pass_frame) {  // [IzunaRecomp] (test71: a profiled frame)
+    g.vk.CmdWriteTimestamp(g.cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, g.draw_queries, g.draw_count);
+    State::DrawLabel& l = g.draw_labels[g.draw_count];
+    l.vs = key.vs;
+    l.ps = key.ps;
+    l.prim = xenos_primitive;
+    l.vertices = vertices;
+    l.indexed = indexed;
+    l.pass = g.pass_count;
+    l.target = color_info[0] & 0xFFF;
+    l.spec = key.spec;
+    l.raster = key.raster;
+    l.blend = key.blend[0];
+    l.depth_control = depth_control;
+    l.color_format = (color_info[0] >> 16) & 0xF;
+    l.aniso = g.prof_aniso;
+    l.tex_w = g.prof_tex_w;
+    l.tex_h = g.prof_tex_h;
+    l.textures = g.prof_textures;
+    ++g.draw_count;
+  }
   // A draw that exported to guest memory (NG2 skins its characters so: the
   // exports fill vertex buffers that later draws read): inside a render pass
   // the GPU overlaps consecutive draws and nothing orders those writes before
@@ -1945,11 +2332,6 @@ bool DrawInit(const DrawContext& context) {
 #endif
   CreatePipelineCache();
   PrewarmImageMemory();  // [IzunaRecomp] (the first image blocks, before the first frame)
-  for (size_t i = 0; i < kMaxListArenas; ++i) {  // [IzunaRecomp] (the strip lists' arenas too: test29)
-    State::MappedBuffer arena;
-    if (!CreateMappedBuffer(kListArenaBytes, 0, arena)) break;
-    g.free_arenas.push_back(arena);
-  }
   {  // Graphics pipeline libraries (with the dynamic states the parts leave out)
     auto load_dev = [&](auto& fn, const char* name) {
       fn = reinterpret_cast<std::remove_reference_t<decltype(fn)>>(g.ctx.get_device_proc_addr(g.ctx.device, name));
@@ -2007,6 +2389,8 @@ bool DrawInit(const DrawContext& context) {
       qci.queryType = VK_QUERY_TYPE_TIMESTAMP;
       qci.queryCount = 256;
       if (g.vk.CreateQueryPool(g.ctx.device, &qci, nullptr, &g.pass_queries) != VK_SUCCESS) g.pass_queries = VK_NULL_HANDLE;
+      qci.queryCount = State::kDrawQueries;  // [IzunaRecomp] (test71: per draw)
+      if (g.vk.CreateQueryPool(g.ctx.device, &qci, nullptr, &g.draw_queries) != VK_SUCCESS) g.draw_queries = VK_NULL_HANDLE;
       g.timestamp_ns = props.limits.timestampPeriod;
     }
   }
@@ -2120,9 +2504,10 @@ void OnDrawIndexed(uint32_t device, uint32_t primitive, uint32_t base_vertex, ui
                                   uint32_t(is32) | (endian << 1) | (uint32_t(reset) << 3), base_vertex, 0};
   if (Threaded()) {
     QueueDraw(device, primitive, index_count, index_info);
-    return;
+  } else {
+    Draw(d, primitive, index_count, index_info);
   }
-  Draw(d, primitive, index_count, index_info);
+  NoteDrawForKickoff();  // [IzunaRecomp] (a submit every native_auto_kickoff_draws: native_renderer.cpp)
 }
 
 void OnDraw(uint32_t device, uint32_t primitive, uint32_t start, uint32_t count) {
@@ -2134,9 +2519,10 @@ void OnDraw(uint32_t device, uint32_t primitive, uint32_t start, uint32_t count)
   const uint32_t index_info[4] = {0xFFFFFFFFu, 0, start + d.Reg(VGT_INDX_OFFSET), 0};
   if (Threaded()) {
     QueueDraw(device, primitive, count, index_info);
-    return;
+  } else {
+    Draw(d, primitive, count, index_info);
   }
-  Draw(d, primitive, count, index_info);
+  NoteDrawForKickoff();
 }
 
 namespace draw {
@@ -2363,7 +2749,7 @@ void ResolveWork(const uint8_t* device_bytes, uint32_t flags, const int32_t* rec
     g.last_resolved = dest;
     ++g.stats.resolves;
     if (g.log_frame && (g.capture_frame || REXCVAR_GET(native_dump_resolves))) DumpResolve(dst, dest);
-    if (g.log_frame) MarkPass(dest, dw, dh);
+    MarkPass(dest, dw, dh);  // (only while a frame is timed: logged, or izuna_gpu_profile)
     if (g.log_frame) {
       FrameLog("resolve: source {} ({}x{} fmt {}) rect {},{}-{},{} -> {:08X} {}x{} info {:08X} flags {:X}",
                   source, src->width, src->height, int(src->format), x0, y0, x1, y1, dest, dw, dh, dest_info, flags);
@@ -2455,11 +2841,62 @@ void ClearWork(const uint8_t* device_bytes, const PendingClear& clear) {
   const Image* depth = nullptr;
   if ((clear.flags & 0x30) && Be32(dev + 12448)) depth = Target(d.Reg(RB_DEPTH_INFO) & 0xFFF, 0, pitch, true);
   if (!depth && !colors[0] && !colors[1] && !colors[2] && !colors[3]) return;
+  // [IzunaRecomp] test65: a clear of whole targets (from their top left, their
+  // full width) before any draw of the pass is the pass's load operation: a
+  // clear inside the pass (vkCmdClearAttachments) turned off Adreno's LRZ - its
+  // early depth rejection - for the whole pass (Turnip's notes, test64: every
+  // pass of every frame), so every hidden pixel of the scene was shaded.
+  // test74: decided per attachment - the scene's depth cleared whole with a
+  // colour target of another width (the 1280-pitch frame) kept the depth clear
+  // inside the pass too; only the attachments not cleared whole stay there
+  // (a colour-only clear inside a pass leaves LRZ alone).
+  uint32_t load_flags = 0;  // (the attachments the pass's load operation clears: clear.flags bits)
+  {
+    const Image* first = depth ? depth : colors[0] ? colors[0] : colors[1] ? colors[1] : colors[2] ? colors[2] : colors[3];
+    const int32_t cx0 = ToHost(int32_t(clear.rect[0]), first->scale), cy0 = ToHost(int32_t(clear.rect[1]), first->scale_y);
+    const int32_t cx1 = ToHost(int32_t(clear.rect[2]), first->scale);
+    auto covers = [&](const Image* t) {
+      return ToHost(int32_t(clear.rect[0]), t->scale) <= 0 && ToHost(int32_t(clear.rect[1]), t->scale_y) <= 0 &&
+             ToHost(int32_t(clear.rect[2]), t->scale) >= int32_t(t->width);
+    };
+    uint32_t wanted = 0;
+    for (uint32_t i = 0; i < 4; ++i) {
+      if (!colors[i]) continue;
+      wanted |= 1u << i;
+      if (covers(colors[i])) load_flags |= 1u << i;
+    }
+    if (depth) {
+      wanted |= clear.flags & 0x30;
+      if (covers(depth)) load_flags |= clear.flags & 0x30;
+    }
+    const bool same = g.rendering && colors == g.bound_colors && depth == g.bound_depth;
+    if (!REXCVAR_GET(native_clear_as_load) || (same && g.pass_draws != 0)) load_flags = 0;
+    if (load_flags) {
+      PendingClear part = clear;
+      part.flags = load_flags;
+      Bind(colors, depth, &part);
+      if (load_flags == wanted) {
+        ++g.stats.clears;
+        return;
+      }
+    }
+    static int logged = 0, logged_depth = 0;  // [IzunaRecomp] (test71: the clears that stay inside a pass, and why;
+    // test74: those with depth apart - they are what turns Adreno's LRZ off)
+    const bool depth_inside = depth && !(load_flags & 0x30);
+    if (depth_inside ? logged_depth++ < 20 : logged++ < 4) {
+      REXLOG_INFO("[native] clear inside a pass: flags {:02X} rect {},{}-{},{} (host {},{}-{}) targets {}x{}{}{}{}; "
+                  "{} draws in the pass so far{}; the pass's load clears {:02X}",
+                  clear.flags, clear.rect[0], clear.rect[1], clear.rect[2], clear.rect[3], cx0, cy0, cx1,
+                  first->width, first->height, depth ? " depth" : "", colors[0] ? " colour" : "",
+                  depth && colors[0] ? fmt::format(" (colour {}x{})", colors[0]->width, colors[0]->height) : std::string(),
+                  g.pass_draws, same ? " (same targets)" : "", load_flags);
+    }
+  }
   Bind(colors, depth);
   std::array<VkClearAttachment, 5> att{};
   uint32_t n = 0;
   for (uint32_t i = 0; i < 4; ++i) {
-    if (!colors[i]) continue;
+    if (!colors[i] || (load_flags & (1u << i))) continue;
     att[n].aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     att[n].colorAttachment = i;
     for (int c = 0; c < 4; ++c) att[n].clearValue.color.float32[c] = clear.color[c];
@@ -2468,10 +2905,11 @@ void ClearWork(const uint8_t* device_bytes, const PendingClear& clear) {
   if (depth) {
     // (D3DCLEAR_ZBUFFER 0x10, D3DCLEAR_STENCIL 0x20: the game clears its
     // GEQUAL-tested scene depth with 0x1F and Z 0)
-    att[n].aspectMask = ((clear.flags & 0x10) ? VK_IMAGE_ASPECT_DEPTH_BIT : 0) |
-                        ((clear.flags & 0x20) ? VK_IMAGE_ASPECT_STENCIL_BIT : 0);
+    const uint32_t inside = clear.flags & 0x30 & ~load_flags;
+    att[n].aspectMask = ((inside & 0x10) ? VK_IMAGE_ASPECT_DEPTH_BIT : 0) |
+                        ((inside & 0x20) ? VK_IMAGE_ASPECT_STENCIL_BIT : 0);
     att[n].clearValue.depthStencil = {float(std::clamp(clear.z, 0.0, 1.0)), clear.stencil & 0xFF};
-    ++n;
+    if (att[n].aspectMask) ++n;
   }
   // (the rect, within the targets: EDRAM surfaces are pitch x kRtHeight here)
   const Image* any = depth ? depth : colors[0] ? colors[0] : colors[1] ? colors[1] : colors[2] ? colors[2] : colors[3];
@@ -2480,7 +2918,7 @@ void ClearWork(const uint8_t* device_bytes, const PendingClear& clear) {
   const int32_t y0 = std::clamp<int32_t>(ToHost(int32_t(clear.rect[1]), ksy), 0, int32_t(any->height));
   const int32_t x1 = std::clamp<int32_t>(ToHost(int32_t(clear.rect[2]), ks), x0, int32_t(any->width));
   const int32_t y1 = std::clamp<int32_t>(ToHost(int32_t(clear.rect[3]), ksy), y0, int32_t(any->height));
-  if (x1 > x0 && y1 > y0) {
+  if (n && x1 > x0 && y1 > y0) {
     VkClearRect cr = {{{x0, y0}, {uint32_t(x1 - x0), uint32_t(y1 - y0)}}, 0, 1};
     g.vk.CmdClearAttachments(g.cmd, n, att.data(), 1, &cr);
   }
@@ -2574,7 +3012,7 @@ bool DrawEndFrame(uint32_t device, uint32_t front_texture, VkImage target, bool 
                 ft ? Be32(ft + 0x1C) : 0, ft ? Be32(ft + 0x20) : 0, ft ? Be32(ft + 0x24) : 0,
                 front ? fmt::format("{}x{} image", front->width, front->height) : std::string("none"));
   }
-  if (g.log_frame && g.pass_count) {  // (the logged frame's last pass, then its times pending)
+  if (g.pass_count && !g.pass_frame) {  // (the logged or profiled frame's last pass, then its times pending)
     MarkPass(0, 0, 0);
     g.pass_frame = g.frame_number + 1;
   }

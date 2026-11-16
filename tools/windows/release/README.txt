@@ -22,10 +22,9 @@ Starting
    copy (the one with default.xex). It is remembered.
 3. START GAME.
 
-The first start takes a little longer: ng2.exe reads the game's shaders from
-your copy and compiles them for your GPU (on every core, with dxcompiler.dll -
-keep it beside ng2.exe; the window title shows how far along it is). They are
-kept in %LOCALAPPDATA%\IzunaRecomp\shaders, so later starts skip this.
+The game's shaders are built into ng2.exe, so there is no shader build at
+the first start; the first time an area is seen, its pipelines are prepared
+behind a short progress bar.
 
 The folder can also be given on the command line:
   ng2.exe --game_data_root="D:\Games\Ninja Gaiden II"

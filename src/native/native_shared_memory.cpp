@@ -9,6 +9,8 @@
 #include <sys/socket.h>
 #define VK_USE_PLATFORM_ANDROID_KHR 1
 #endif
+#include <setjmp.h>
+#include <signal.h>
 #include <sys/mman.h>
 #include <unistd.h>
 
@@ -83,6 +85,51 @@ uint32_t MemoryType(const Vk& vk, uint32_t bits, std::initializer_list<VkMemoryP
 }
 
 // Two CPU mappings of fd show one memory (the guest maps it several times).
+// [IzunaRecomp] A mapping that maps but faults when touched (SIGBUS - issue #10:
+// an Adreno 725 phone closed at START GAME, the log ending here) is caught and
+// reported as unusable, so the next way is tried instead of the app dying.
+// (SIGBUS only: a dma-buf that cannot be faulted in raises that; SIGSEGV is
+// the SDK's own, for the guest's protected pages)
+sigjmp_buf g_touch_jump;
+volatile sig_atomic_t g_touching = 0;
+struct sigaction g_old_bus = {};
+void OnTouchFault(int sig, siginfo_t* info, void* context) {
+  if (g_touching) siglongjmp(g_touch_jump, 1);
+  // (not ours: to whatever handled it before)
+  if (g_old_bus.sa_flags & SA_SIGINFO) {
+    if (g_old_bus.sa_sigaction) g_old_bus.sa_sigaction(sig, info, context);
+  } else if (g_old_bus.sa_handler != SIG_IGN && g_old_bus.sa_handler != SIG_DFL && g_old_bus.sa_handler) {
+    g_old_bus.sa_handler(sig);
+  } else {
+    sigaction(SIGBUS, &g_old_bus, nullptr);
+    raise(SIGBUS);
+  }
+}
+
+// One write and one read, through two mappings: whether they are one memory.
+// False (not a crash) if touching either faults.
+bool TouchTest(uint8_t* a, uint8_t* b) {
+  struct sigaction fault = {};
+  fault.sa_sigaction = OnTouchFault;
+  fault.sa_flags = SA_SIGINFO;
+  sigemptyset(&fault.sa_mask);
+  sigaction(SIGBUS, &fault, &g_old_bus);
+  bool same = false;
+  if (sigsetjmp(g_touch_jump, 1) == 0) {
+    g_touching = 1;
+    a[0x3000] = 0x77;
+    same = b[0x2000] == 0x77;  // (b starts 4 KB in, as the 0xE0000000 view)
+    a[0x3000] = 0;
+    g_touching = 0;
+  } else {
+    g_touching = 0;
+    REXLOG_WARN("[native] shared memory: the memory faults when touched");
+    same = false;
+  }
+  sigaction(SIGBUS, &g_old_bus, nullptr);
+  return same;
+}
+
 bool MapsAndAliases(int fd) {
   auto* a = static_cast<uint8_t*>(mmap(nullptr, kSize, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0));
   if (a == MAP_FAILED) {
@@ -94,9 +141,7 @@ bool MapsAndAliases(int fd) {
   auto* b = static_cast<uint8_t*>(mmap(nullptr, kSize - 0x1000, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0x1000));
   bool same = false;
   if (b != MAP_FAILED) {
-    a[0x3000] = 0x77;
-    same = b[0x2000] == 0x77;  // (b starts 4 KB in, as the 0xE0000000 view)
-    a[0x3000] = 0;
+    same = TouchTest(a, b);
     munmap(b, kSize - 0x1000);
   }
   munmap(a, kSize);
@@ -138,7 +183,9 @@ std::vector<int> AhbFds(AHardwareBuffer* ahb) {
 }
 
 // Android: an AHardwareBuffer; the renderer imports it later (RendererBuffer).
-rex::memory::FileMappingHandle Provide(size_t* size) {
+rex::memory::FileMappingHandle ProvideHardwareBuffer(size_t* size) {
+  REXLOG_INFO("[native] shared memory: trying a hardware buffer");
+  rex::FlushLogging();  // (a crash in the driver here would lose the line)
   AHardwareBuffer_Desc d = {};
   d.width = uint32_t(kSize);
   d.height = 1;
@@ -172,14 +219,14 @@ rex::memory::FileMappingHandle Provide(size_t* size) {
   return fd;
 }
 
-#else
+#endif
 
-// Linux: Vulkan memory on the renderer's own device, exported as a dma-buf.
+// Linux (and Android when a hardware buffer cannot be used): Vulkan memory on the renderer's own device, exported as a dma-buf.
 // Tried first on every GPU (RADV and ANV refuse to import a shared-memory
 // file even where they have VK_EXT_external_memory_host); if any step fails the
 // guest keeps its mapping file and the renderer imports it the PC's way
 // (NVIDIA's driver).
-rex::memory::FileMappingHandle Provide(size_t* size) {
+rex::memory::FileMappingHandle ProvideVulkanMemory(size_t* size) {
   Vk vk;
   if (!GetVk(vk)) {
     REXLOG_WARN("[native] shared memory: no Vulkan device yet - the guest's memory stays as it is");
@@ -241,6 +288,8 @@ rex::memory::FileMappingHandle Provide(size_t* size) {
     gfi.memory = memory;
     gfi.handleType = handle;
     int fd = -1;
+    REXLOG_INFO("[native] shared memory: trying Vulkan memory (type {}) as a {}", type, handle_name);
+    rex::FlushLogging();
     if (get_fd(vk.device, &gfi, &fd) != VK_SUCCESS || fd < 0 || !MapsAndAliases(fd)) {
       if (fd >= 0) close(fd);
       free_memory(vk.device, memory, nullptr);
@@ -259,7 +308,14 @@ rex::memory::FileMappingHandle Provide(size_t* size) {
   REXLOG_INFO("[native] shared memory: not available on this device - the guest's memory stays as it is");
   return rex::memory::kFileMappingHandleInvalid;
 }
-#endif  // __ANDROID__
+
+rex::memory::FileMappingHandle Provide(size_t* size) {
+#if defined(__ANDROID__)
+  const rex::memory::FileMappingHandle ahb = ProvideHardwareBuffer(size);
+  if (ahb != rex::memory::kFileMappingHandleInvalid) return ahb;
+#endif
+  return ProvideVulkanMemory(size);
+}
 
 }  // namespace
 

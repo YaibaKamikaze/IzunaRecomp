@@ -77,6 +77,8 @@ std::string NativeLibraryDir() {
   return fs::path(info.dli_fname).parent_path().string() + "/";
 }
 
+std::string g_requested;  // (the setting at this start)
+
 void* OpenLoader() {
   if (g_id.empty()) return nullptr;
   const fs::path dir = Root() / g_id;
@@ -158,7 +160,9 @@ std::string Install(const std::string& id) {
     failed = id;
     REXLOG_ERROR("GPU driver: \"{}\" did not start the game last time - the system driver this time", id);
   }
+  g_requested = id;
   g_id = failed.empty() ? id : std::string();
+  REXLOG_INFO("GPU driver setting: {}", id.empty() ? std::string("the system's driver") : id);
   rex::ui::vulkan::SetLoaderOpener(OpenLoader);
   return failed;
 }
@@ -171,6 +175,8 @@ void RendererStarted() {
 
 std::string InUse() { return g_in_use; }
 
+std::string Requested() { return g_requested; }
+
 }  // namespace izuna::gpu_driver
 
 #else  // not Android: the system's driver only
@@ -180,6 +186,7 @@ std::vector<Package> Installed() { return {}; }
 std::string Install(const std::string&) { return {}; }
 void RendererStarted() {}
 std::string InUse() { return {}; }
+std::string Requested() { return {}; }
 }  // namespace izuna::gpu_driver
 
 #endif

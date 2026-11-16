@@ -29,12 +29,11 @@ mkdir -p "$out"
 
 cp "$exe" "$out/ng2.exe"
 cp "$compat" "$out/ng2-compat.exe"
-# DXC, which ng2.exe loads at startup to compile the shaders it translates
-# from the player's game (src/izuna/izuna_shaders.cpp). Not in the repo: the
-# unmodified release build, kept with the XenosRecomp fork.
-dxc="${DXC_DLL:-$HOME/ng2-ps5-deps/tools/reeot-XenosRecomp/thirdparty/dxc-bin/bin/x64/dxcompiler.dll}"
-[[ -f "$dxc" ]] || { echo "no $dxc (set DXC_DLL to DXC 1.8's x64 dxcompiler.dll)" >&2; exit 1; }
-cp "$dxc" "$out/dxcompiler.dll"
+# (No DXC since the shaders are built in - CMakeLists.txt; a build made with
+# IZUNA_SHADERS_FROM_GAME=ON needs dxcompiler.dll beside it: DXC_DLL.)
+if [[ -n "${DXC_DLL:-}" ]]; then
+  cp "$DXC_DLL" "$out/dxcompiler.dll"
+fi
 sed "s/@VERSION@/$version/" "$here/release/README.txt" > "$out/README.txt"
 cp "$root/LICENSE" "$out/LICENSE.txt"
 
@@ -59,7 +58,7 @@ copy_license lua.txt "$root/third_party/lua/LICENSE"
 copy_license zstd.txt "$root/third_party/zstd/LICENSE"
 copy_license smol-v.txt "$root/third_party/smol-v/LICENSE.txt"
 copy_license XenosRecomp.md "$root/third_party/xenosrecomp/LICENSE.md"
-copy_license dxcompiler.txt "$here/release/dxcompiler-license.txt"
+[[ -f "$out/dxcompiler.dll" ]] && copy_license dxcompiler.txt "$here/release/dxcompiler-license.txt"
 copy_license SDL3.txt "$sdk/thirdparty/sdl3/LICENSE.txt"
 copy_license imgui.txt "$sdk/thirdparty/imgui/LICENSE.txt"
 copy_license fmt.txt "$sdk/thirdparty/fmt/LICENSE"
@@ -91,6 +90,6 @@ if find "$out" -iname '*.wav' -o -iname '*.xex' -o -iname '*.ng2' -o -iname '*.p
 fi
 
 (cd "$dest" && rm -f "$name.zip" && zip -qr9 "$name.zip" "$name")
-(cd "$out" && sha256sum ng2.exe ng2-compat.exe dxcompiler.dll) > "$dest/$name.sha256"
+(cd "$out" && sha256sum ng2.exe ng2-compat.exe) > "$dest/$name.sha256"
 echo "$out"
 echo "$dest/$name.zip ($(du -h "$dest/$name.zip" | cut -f1))"

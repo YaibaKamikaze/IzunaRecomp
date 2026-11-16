@@ -26,6 +26,8 @@
 #include "native/native_draw.h"
 #include "native/native_shared_memory.h"
 #include "izuna/izuna_gpu_driver.h"
+#include "izuna/izuna_hooks.h"
+#include "izuna/izuna_android_perf.h"
 
 #include <array>
 #include <initializer_list>
@@ -69,6 +71,13 @@ constexpr int32_t kDumpEveryDefault = 0;
 #else
 constexpr int32_t kDumpEveryDefault = 600;  // [dev builds] a frame every ~10 s, for the owner's test runs
 #endif
+// [IzunaRecomp] (renderer start, below)
+// [IzunaRecomp] (NoteDrawForKickoff, below)
+REXCVAR_DEFINE_INT32(native_auto_kickoff_draws, 128, "Native renderer",
+                     "[IzunaRecomp] Submit the frame's recorded work to the GPU every N draws (0: only at the game's "
+                     "own kickoffs and the swap)");
+REXCVAR_DEFINE_BOOL(izuna_skip_stream_writers, true, "Native renderer",
+                    "[IzunaRecomp] Skip Direct3D's copies of its dirty state into the command stream nobody reads");
 REXCVAR_DEFINE_INT32(native_dump_keep, 20, "Native renderer",
                      "[native renderer] How many saved frames to keep (they are reused in turn); 0 = keep all, "
                      "named by frame number");
@@ -1180,8 +1189,10 @@ bool Initialize() {
   dc.get_instance_proc_addr = gipa;
   dc.get_device_proc_addr = g.vk.GetDeviceProcAddr;
   dc.guest_address = g.guest_address;
+  dc.guest_buffer = g.guest;
   dc.graphics_pipeline_library = g.dev->graphics_pipeline_library;
   dc.dual_src_blend = g.dev->dual_src_blend;
+  dc.pipeline_stats = g.dev->pipeline_executable_info;
   dc.frame_commands = &FrameCommands;
   g.drawing = DrawInit(dc);
   if (g.drawing) {
@@ -1210,24 +1221,23 @@ bool Initialize() {
   REXLOG_INFO("[native] renderer up: {}x{} frames on the Vulkan device (app renderer features {})", FrameWidth(),
               FrameHeight(), g.dev->app_renderer_features);
   izuna::gpu_driver::RendererStarted();  // [IzunaRecomp] the chosen driver package works
-#if defined(__ANDROID__)
-  {
-    // [IzunaRecomp] Every one of the game's translated shaders uses 64-bit
-    // integers (its memory addresses): a driver without them - Qualcomm's own
-    // on Adreno 7xx (test52: every pipeline VK_ERROR_UNKNOWN) - draws nothing.
-    auto features_fn = reinterpret_cast<PFN_vkGetPhysicalDeviceFeatures>(
-        gipa(instance, "vkGetPhysicalDeviceFeatures"));
-    VkPhysicalDeviceFeatures f = {};
-    if (features_fn) features_fn(VkPhysicalDevice(g.dev->physical_device), &f);
-    if (features_fn && !f.shaderInt64) {
-      REXLOG_ERROR("[native] this GPU driver has no 64-bit integers in shaders: the game's shaders cannot run on it");
-      izuna::pc::ShowError(
-          "This GPU driver cannot run IzunaRecomp's shaders (it has no 64-bit integers in shaders), so the game "
-          "will stay black.\n\nPut a Turnip driver's .zip in the drivers folder of the IzunaRecomp folder, start "
-          "the app again, and choose it in Settings > Display > GPU driver.");
+  // [IzunaRecomp] (No 64-bit integer check any more: since izuna-shaders 7
+  // the game's shaders use none - uniform and storage buffers, no device
+  // addresses - so Qualcomm's own Adreno driver can run them too.)
+  // The engine's command stream: nothing reads it (izuna_gpu.h), so the four
+  // Direct3D functions that only copy the device's dirty state into it are
+  // not run - the CPU time, and the stream's kickoffs (a Vulkan submit and a
+  // render pass split each) they caused.
+  if (REXCVAR_GET(izuna_skip_stream_writers)) {
+    int skipped = 0;
+    for (uint32_t address : {0x837431A8u,    // registers, by mask (render states)
+                             0x83743268u,    // the boolean / loop constants
+                             0x837433E8u,    // the fetch constants (textures, vertex buffers)
+                             0x83743548u}) {  // the float constants (vertex and pixel shaders)
+      skipped += izuna::hooks::Skip(address) ? 1 : 0;
     }
+    REXLOG_INFO("[native] {} of 4 command stream writers skipped (nothing reads the stream)", skipped);
   }
-#endif
   return true;
 }
 
@@ -1704,8 +1714,31 @@ bool RequestNamedDump(const char* name) {
   return true;
 }
 
+// [IzunaRecomp] The renderer's own kickoffs (v0.2.2.1): Direct3D kicked its
+// command ring off when a segment filled - 2-3 times a frame, each a submit of
+// what the renderer had recorded so far, so the GPU worked through the frame
+// while the game was still building it. Since test61 skips Direct3D's
+// constant and register copies into that ring (nothing reads it), it rarely
+// fills: one submit a frame, at the swap, the GPU starting on the frame only
+// then and finishing it 10-15 ms later - around the next refresh, before it
+// one frame and after it the next: frames shown for one refresh or two, 60
+// a second that looked like an uneven 30 ("paced 0.03 ms" in the presenter's
+// report: every frame came late for it). So a kickoff every
+// native_auto_kickoff_draws draws, as the ring's own did.
+namespace {
+uint32_t g_draws_since_kickoff = 0;  // (the game's render thread)
+}
+
+void NoteDrawForKickoff() {
+  if (!g.ready || !g.drawing || std::this_thread::get_id() != g.render_thread) return;
+  const int32_t every = REXCVAR_GET(native_auto_kickoff_draws);
+  if (every <= 0 || ++g_draws_since_kickoff < uint32_t(every)) return;
+  OnGuestKickoff();
+}
+
 void OnGuestKickoff() {
   if (!g.ready || !g.drawing || std::this_thread::get_id() != g.render_thread) return;
+  g_draws_since_kickoff = 0;
   if (DrawThreaded()) {
     QueueKickoff();
     return;
@@ -1730,6 +1763,8 @@ void RecordDone(uint64_t seq) {
 void OnGuestSwap(uint32_t device, uint32_t front_texture) {
   rex::audio::HostStallScope stall;  // (a long wait here holds the game's audio with it)
   g.render_thread = std::this_thread::get_id();
+  izuna::android_perf::FrameDone();  // [IzunaRecomp] (Android: the performance hints; elsewhere nothing)
+  g_draws_since_kickoff = 0;  // (the swap submits the rest of the frame)
   static bool tried = false;
   if (!g.ready && !tried) {
     tried = true;

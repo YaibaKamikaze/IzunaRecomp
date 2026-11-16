@@ -213,9 +213,20 @@ struct Ng2Settings {
   // game is meant for a controller; the hub's main menu turns them on, after
   // asking whether the player is sure.
   bool touch_controls = false;
+  // [IzunaRecomp] Android: where the touch controls are and how big - "" the
+  // default layout (izuna::touch::SetLayout; edited in Settings > Controls).
+  std::string touch_layout;
   // [IzunaRecomp] Android: the Vulkan driver package in use - "" the system's
   // (izuna_gpu_driver.h). From the next start.
   std::string gpu_driver;
+  // [IzunaRecomp] Android, Turnip diagnosis (Developer tab): 0 off, 1 Turnip's
+  // performance notes to logs/mesa.log, 2 + prefer tile memory (GMEM), 3 +
+  // always system memory. From the next start.
+  int turnip_debug = 0;
+  // [IzunaRecomp] v0.2.2.1, Android (Developer tab): the game's busy-waits -
+  // 0 spin then yield (smooth frame pacing), 1 also sleep after 1 ms (cooler,
+  // the test61-v0.2.2.1 way). izuna_spin_backoff 2 / 3.
+  int busy_waits = 0;
   // [IzunaRecomp] test43: the swapchain's present mode on a PC - auto, fifo,
   // fifo_relaxed, mailbox, immediate (present_mode, vulkan_presenter.cpp).
   std::string pc_present_mode = "auto";
@@ -423,7 +434,10 @@ struct Ng2Settings {
         << "pc_refresh_switch=" << (pc_refresh_switch ? 1 : 0) << "\n"
         << "skip_cutscenes_x=" << (skip_cutscenes_x ? 1 : 0) << "\n"
         << "touch_controls=" << (touch_controls ? 1 : 0) << "\n"
+        << "touch_layout=" << touch_layout << "\n"
         << "gpu_driver=" << gpu_driver << "\n"
+        << "turnip_debug=" << turnip_debug << "\n"
+        << "busy_waits=" << busy_waits << "\n"
         << "pc_present_mode=" << pc_present_mode << "\n"
         << "audio_delay_ms=" << audio_delay_ms << "\n"
         << "pc_defaults_version=" << pc_defaults_version << "\n"
@@ -537,7 +551,10 @@ struct Ng2Settings {
     else if (k == "pc_refresh_switch") pc_refresh_switch = Truthy(v);
     else if (k == "skip_cutscenes_x") skip_cutscenes_x = Truthy(v);
     else if (k == "touch_controls") touch_controls = Truthy(v);
+    else if (k == "touch_layout") touch_layout = v;
     else if (k == "gpu_driver") gpu_driver = v;
+    else if (k == "turnip_debug") turnip_debug = std::clamp(std::atoi(v.c_str()), 0, 3);
+    else if (k == "busy_waits") busy_waits = std::clamp(std::atoi(v.c_str()), 0, 1);
     else if (k == "audio_delay_ms") audio_delay_ms = std::clamp(std::atoi(v.c_str()), 0, 120);
     else if (k == "pc_present_mode") {
       if (v == "auto" || v == "fifo" || v == "fifo_relaxed" || v == "mailbox" || v == "immediate") pc_present_mode = v;

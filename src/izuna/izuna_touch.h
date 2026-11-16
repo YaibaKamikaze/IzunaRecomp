@@ -11,7 +11,9 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <memory>
+#include <string>
 
 namespace rex::input {
 class InputDriver;
@@ -35,5 +37,16 @@ std::unique_ptr<rex::input::InputDriver> MakeDriver();
 // Draws the controls over everything (ImGui's foreground list), at the
 // display's size in pixels. Each frame, from an ImGui dialog.
 void Draw(float width, float height);
+
+// The player's own layout (Ng2Settings::touch_layout; "" the default): each
+// control's place, in fractions of the screen, and its size.
+void SetLayout(const std::string& layout);
+// The layout editor (Settings > Controls > Touch layout): the controls over a
+// dimmed screen - drag one to move it, SMALLER / BIGGER for the one last
+// touched, RESET for the default, DONE to keep it. The game and the menus see
+// no touches meanwhile. `save` gets the new layout when DONE is pressed (from
+// Draw: the UI thread).
+void BeginEdit(std::function<void(const std::string&)> save);
+bool Editing();
 
 }  // namespace izuna::touch

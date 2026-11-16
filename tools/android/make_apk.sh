@@ -20,8 +20,10 @@ export PATH=$JAVA_HOME/bin:$PATH
 lib=$root/out/android/libmain.so
 [[ -f "$lib" ]] || { echo "no $lib (build it: tools/android/build.sh)" >&2; exit 1; }
 version="$(tr -d ' \r\n' < "$root/IZUNA_VERSION")"
-IFS=. read -r vmaj vmin vpat <<< "$version"
-version_code=$(( vmaj * 10000 + vmin * 100 + ${vpat:-0} ))
+IFS=. read -r vmaj vmin vpat vfix <<< "$version"
+# (maj.min.patch[.fix]: 0.2.2 was 202; from 0.2.2.1 on, ten times as fine and
+# always higher than before: 0.2.2.1 -> 2021, 0.2.3 -> 2030)
+version_code=$(( vmaj * 100000 + vmin * 1000 + ${vpat:-0} * 10 + ${vfix:-0} ))
 
 work=$root/out/android-apk
 rm -rf "$work"; mkdir -p "$work/res" "$work/classes" "$work/dex" "$work/lib/arm64-v8a" "$dest"

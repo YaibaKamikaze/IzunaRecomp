@@ -65,6 +65,13 @@ struct Ng2Tuning {
                                          const std::string& mappings_file) {
     std::vector<Entry> out;
 
+#if defined(__ANDROID__)
+    // [IzunaRecomp] v0.2.2.1: the game's busy-waits (Developer tab; the SDK's
+    // spin_backoff.cpp) - spin then yield, or also sleep (cooler).
+    out.push_back({"izuna_spin_backoff", s.busy_waits == 1 ? "3" : "2",
+                   "[IzunaRecomp] the game's busy-waits: 2 spin then yield, 3 also sleep after 1 ms"});
+#endif
+
     // [IzunaRecomp] The Kasumi renderer draws at the preset's scale (1 720p,
     // 2 1440p, 3 4K). Lost in test47's tidy (an edit that did not apply):
     // test47-49 drew at 720p whatever the preset.

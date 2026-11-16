@@ -54,10 +54,36 @@ include(generated/rexglue.cmake)
 # never had them.)
 if(WIN32 AND NOT IZUNA_RECOMP_ASYNC_EH)
     list(REMOVE_ITEM REXGLUE_RECOMP_OPTIONS -fasync-exceptions /EHa)
-    if(REXGLUE_ENTRYPOINT_GENERATED_SOURCES)
-        set_source_files_properties(${REXGLUE_ENTRYPOINT_GENERATED_SOURCES}
-            PROPERTIES COMPILE_OPTIONS "${REXGLUE_RECOMP_OPTIONS}")
+endif()
+# [IzunaRecomp] Android: no stack canaries in the recompiled game (the NDK
+# turns on -fstack-protector-strong; the game's functions keep vector
+# temporaries in local arrays, so most would check one on every return).
+# Guest code works on guest memory, not its host stack. (The PS5 build never
+# had them either.)
+if(IZUNA_ANDROID)
+    list(APPEND REXGLUE_RECOMP_OPTIONS -fno-stack-protector)
+endif()
+# [IzunaRecomp] The game's loads and stores are plain C++ accesses now
+# (generated/default/ng2_pch.h), no longer volatile - so the compiler may
+# merge neighbouring ones. Some guest addresses are emulated registers (the
+# GPU's at 0x7FC80000, the XMA decoder's), reached through a fault handler
+# that decodes the faulting instruction and knows single 32-bit loads and
+# stores only (third_party/rexglue-sdk/src/system/mmio_handler.cpp): no
+# pairs (AArch64 LDP/STP), no merged 64-bit stores, no vector stores. These
+# keep every guest access one instruction of its own size.
+if(NOT MSVC OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    list(APPEND REXGLUE_RECOMP_OPTIONS -fno-slp-vectorize "SHELL:-mllvm -combiner-store-merging=0")
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|ARM64")
+        list(APPEND REXGLUE_RECOMP_OPTIONS "SHELL:-mllvm -aarch64-enable-ldst-opt=0")
     endif()
+endif()
+if(REXGLUE_ENTRYPOINT_GENERATED_SOURCES)
+    # (SHELL: groups are expanded in target options only - the target gets the
+    # whole list in rexglue_apply_recomp_settings; the sources get the rest)
+    set(_izuna_source_options ${REXGLUE_RECOMP_OPTIONS})
+    list(FILTER _izuna_source_options EXCLUDE REGEX "^SHELL:")
+    set_source_files_properties(${REXGLUE_ENTRYPOINT_GENERATED_SOURCES}
+        PROPERTIES COMPILE_OPTIONS "${_izuna_source_options}")
 endif()
 
 # The port's own version, read from VERSION rather than typed here, so the
@@ -79,6 +105,8 @@ set(NG2_SOURCES
     src/native/native_shared_memory.cpp  # [IzunaRecomp] guest memory in a GPU-shared buffer (Android, Linux)
     src/izuna/izuna_touch.cpp           # [IzunaRecomp] on-screen touch controls (Android; off by default)
     src/izuna/izuna_gpu_driver.cpp      # [IzunaRecomp] a chosen Vulkan driver package (Android: Turnip)
+    src/izuna/izuna_android_perf.cpp    # [IzunaRecomp] Android: the busiest threads and their cores
+    src/izuna/izuna_cpu_profile.cpp     # [IzunaRecomp] a sampling CPU profiler (Linux, Android; test builds)
     src/native/native_draw.cpp       # (its parts share native_draw_internal.h)
     src/native/native_pipelines.cpp
     src/native/native_textures.cpp
@@ -220,6 +248,14 @@ elseif(IZUNA_ANDROID)
     add_library(ng2 SHARED ${NG2_SOURCES})
     set_target_properties(ng2 PROPERTIES OUTPUT_NAME main)
     target_link_libraries(ng2 PRIVATE android log nativewindow)
+    # [IzunaRecomp] Only what Java and SDL look up is exported
+    # (tools/android/libmain.map): the 48k recompiled functions were all
+    # exported - preemptible, so every guest call went through a PLT stub and
+    # every global through the GOT. Kept inside, the linker binds them directly.
+    target_link_options(ng2 PRIVATE
+        "-Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/tools/android/libmain.map")
+    set_property(TARGET ng2 APPEND PROPERTY LINK_DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/tools/android/libmain.map")
     # libadrenotools (bylaws, BSD-2-Clause): loads a Vulkan driver package the
     # player chose (Turnip) in place of the system driver
     # (src/izuna/izuna_gpu_driver.cpp). Its hook libraries are opened by name
@@ -236,13 +272,15 @@ endif()
 
 rexglue_setup_target(ng2)
 
-# [native renderer] The game's shaders, translated by our XenosRecomp fork.
-# Windows builds them from the player's own copy at startup
-# (src/izuna/izuna_shaders.cpp): ng2.exe carries none. The PS5 and the Linux
-# host test (no DXC) have them built in: tools/native/build_shaders.sh writes
-# out/native-shaders/shader_cache.cpp - made from the game: build output,
-# never committed.
-if(IZUNA_PC AND NOT IZUNA_ANDROID)
+# [native renderer] The game's shaders, translated by our XenosRecomp fork,
+# built in on every platform (owner, 2026-11-08: as on Android and the PS5 -
+# no first-start shader build, no DXC beside the program):
+# tools/native/build_shaders.sh writes out/native-shaders/shader_cache.cpp -
+# made from the game: build output, never committed.
+# IZUNA_SHADERS_FROM_GAME=ON instead builds them from the player's own copy at
+# the first start (src/izuna/izuna_shaders.cpp, DXC) - kept, off.
+option(IZUNA_SHADERS_FROM_GAME "PC: build the game's shaders from the player's copy at the first start (DXC)" OFF)
+if(IZUNA_PC AND NOT IZUNA_ANDROID AND IZUNA_SHADERS_FROM_GAME)
     target_compile_definitions(ng2 PRIVATE IZUNA_SHADERS_FROM_GAME=1)
 else()
     set(NG2_SHADER_CACHE "${CMAKE_CURRENT_SOURCE_DIR}/out/native-shaders/shader_cache.cpp")
@@ -314,6 +352,17 @@ if(TARGET ng2_codegen AND TARGET ng2_recomp AND NOT CMAKE_CROSSCOMPILING)
 endif()
 
 target_compile_definitions(ng2 PRIVATE NG2_VERSION="${NG2_VERSION}")
+# [IzunaRecomp] Test builds carry the diagnostics (the 5 s GPU profile, the CPU
+# sampler, pipeline statistics, the UI event count); release builds are made
+# with -DIZUNA_TEST_BUILD=OFF.
+option(IZUNA_TEST_BUILD "Diagnostics on by default (test builds); OFF for a release" ON)
+if(IZUNA_TEST_BUILD)
+    target_compile_definitions(ng2 PRIVATE IZUNA_TEST_BUILD=1)
+    if(TARGET rexui)
+        target_compile_definitions(rexui PRIVATE IZUNA_TEST_BUILD=1)
+    endif()
+endif()
+message(STATUS "IzunaRecomp test diagnostics: ${IZUNA_TEST_BUILD}")
 
 if(PS5)
     # [ps5 port] Linux names for the POSIX code (as in the SDK), ImGui and stb
@@ -371,7 +420,7 @@ if(WIN32)
     # .exe to read the minidumps with (kept with the build, not shipped).
     target_link_libraries(ng2 PRIVATE dbghelp winmm)
 endif()
-if(IZUNA_PC AND NOT IZUNA_ANDROID)
+if(IZUNA_PC AND NOT IZUNA_ANDROID AND IZUNA_SHADERS_FROM_GAME)
     # [IzunaRecomp] The game's shaders built from the player's own copy at
     # startup (src/izuna/izuna_shaders.cpp): our XenosRecomp fork's translator
     # (third_party/xenosrecomp, MIT) and DXC loaded from dxcompiler.dll beside

@@ -7,6 +7,55 @@
 
 namespace ng2native::draw {
 
+// [IzunaRecomp] test67: what the driver compiled each whole pipeline into
+// (VK_KHR_pipeline_executable_properties: Turnip and RADV report instruction
+// counts, registers, waves per core, spills) - one line per pipeline, to find
+// the game's shaders that are slow on a phone's GPU.
+#if defined(IZUNA_TEST_BUILD)
+#define IZUNA_PIPELINE_STATS_DEFAULT true
+#else
+#define IZUNA_PIPELINE_STATS_DEFAULT false
+#endif
+REXCVAR_DEFINE_BOOL(native_pipeline_stats, IZUNA_PIPELINE_STATS_DEFAULT, "Native renderer",
+                    "[IzunaRecomp] Log each pipeline's compiled statistics (where the driver offers them)");
+
+namespace {
+void LogPipelineStats(VkPipeline pipeline, const PipelineKey& key) {
+  static auto props_fn = reinterpret_cast<PFN_vkGetPipelineExecutablePropertiesKHR>(
+      g.ctx.get_device_proc_addr(g.ctx.device, "vkGetPipelineExecutablePropertiesKHR"));
+  static auto stats_fn = reinterpret_cast<PFN_vkGetPipelineExecutableStatisticsKHR>(
+      g.ctx.get_device_proc_addr(g.ctx.device, "vkGetPipelineExecutableStatisticsKHR"));
+  if (!props_fn || !stats_fn) return;
+  VkPipelineInfoKHR pi = {VK_STRUCTURE_TYPE_PIPELINE_INFO_KHR};
+  pi.pipeline = pipeline;
+  uint32_t n = 0;
+  if (props_fn(g.ctx.device, &pi, &n, nullptr) != VK_SUCCESS || !n) return;
+  std::vector<VkPipelineExecutablePropertiesKHR> execs(n, {VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_PROPERTIES_KHR});
+  if (props_fn(g.ctx.device, &pi, &n, execs.data()) != VK_SUCCESS) return;
+  std::string out = fmt::format("[pipestats] VS {:016X} PS {:016X}", key.vs, key.ps);
+  for (uint32_t i = 0; i < n; ++i) {
+    VkPipelineExecutableInfoKHR ei = {VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_INFO_KHR};
+    ei.pipeline = pipeline;
+    ei.executableIndex = i;
+    uint32_t m = 0;
+    if (stats_fn(g.ctx.device, &ei, &m, nullptr) != VK_SUCCESS || !m) continue;
+    std::vector<VkPipelineExecutableStatisticKHR> st(m, {VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_STATISTIC_KHR});
+    if (stats_fn(g.ctx.device, &ei, &m, st.data()) != VK_SUCCESS) continue;
+    out += fmt::format(" | {}:", execs[i].name);
+    for (const auto& v : st) {
+      switch (v.format) {
+        case VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_BOOL32_KHR: out += fmt::format(" {}={}", v.name, v.value.b32 ? 1 : 0); break;
+        case VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_INT64_KHR: out += fmt::format(" {}={}", v.name, v.value.i64); break;
+        case VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_UINT64_KHR: out += fmt::format(" {}={}", v.name, v.value.u64); break;
+        case VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_FLOAT64_KHR: out += fmt::format(" {}={:.3g}", v.name, v.value.f64); break;
+        default: break;
+      }
+    }
+  }
+  REXLOG_INFO("{}", out);
+}
+}  // namespace
+
 VkBlendFactor BlendFactor(uint32_t x) {
   switch (x) {
     case 0: return VK_BLEND_FACTOR_ZERO;
@@ -165,6 +214,8 @@ VkPipeline BuildPipeline(const PipelineKey& key, VkShaderModule vs_module, VkSha
   pci.pColorBlendState = &cb;
   pci.pDynamicState = &dy;
   pci.layout = g.layout;
+  const bool stats = g.ctx.pipeline_stats && REXCVAR_GET(native_pipeline_stats);
+  if (stats) pci.flags |= VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR;
   VkPipeline pipeline = VK_NULL_HANDLE;
   const auto t0 = std::chrono::steady_clock::now();
   const VkResult pr = g.vk.CreateGraphicsPipelines(g.ctx.device, g.pipeline_cache, 1, &pci, nullptr, &pipeline);
@@ -173,6 +224,7 @@ VkPipeline BuildPipeline(const PipelineKey& key, VkShaderModule vs_module, VkSha
     REXLOG_INFO("[native] pipeline VS {:016X} ({} bytes) PS {:016X} ({} bytes) took {:.0f} ms", key.vs, vs_size,
                 key.ps, ps_size, took);
   }
+  if (pr == VK_SUCCESS && stats) LogPipelineStats(pipeline, key);
   if (pr != VK_SUCCESS) {
     pipeline = VK_NULL_HANDLE;
     REXLOG_WARN("[native] pipeline failed ({}): VS {:016X}{} PS {:016X}{}{}", int(pr), key.vs, vs_module ? "" : " (no module)",
@@ -706,6 +758,7 @@ uint32_t QueueKeys(const uint8_t* data, size_t size, size_t* total) {
       // every such pipeline was built at its first draw, the objects missing
       // until then)
       if (key.depth_format && (key.depth_control & 6)) key.spec |= kSpecFloat24Depth;
+      if (!Float24Depth()) key.spec &= ~kSpecFloat24Depth;  // [IzunaRecomp] (test68: off on Android)
       if (g.pipelines.count(key)) continue;
       const ShaderInfo* vs = ShaderByHash(key.vs);
       const ShaderInfo* ps = key.ps ? ShaderByHash(key.ps) : nullptr;

@@ -6,6 +6,7 @@
 > The PS5 build (still v0.2.1) applies it as a title update, which may stop the game from launching there: move
 > `default.xexp` out of `PPSA94203/Game Data/`; put it back if NG2Recomp needs it.
 
+## v0.2.2.1 makes Windows and Linux (the Steam Deck included) faster, with a steady, even 60 fps. Android stays on v0.2.2 and the PS5 on v0.2.1.
 ## v0.2.2 adds an Android build (Snapdragon, with Turnip drivers — its performance is poor for now), a Linux build that draws on AMD and Intel GPUs (the Steam Deck included), and fixes for Windows.
 ## This got released with the purpose of people playing around with it and seeing what can be improved, so if you have an issue with it please talk about it and send your logs, this will help the project. I am but one person using the water eating slop machine to develop this and don't have all the hardware possible to test it, I've only used a 4060 and an AMD CPU to try it so far, so reports from AMD and Intel Arc GPUs are especially welcome.
 
@@ -57,7 +58,7 @@ it executable (`chmod +x`) and run it — on a Steam Deck, add it to Steam as a
 non-Steam game and run it as it is, without Proton. Settings, logs and mods
 live in `~/.local/share/IzunaRecomp`. The rest of this section is the same.
 
-**Android:** download `IzunaRecomp-<version>-android.apk` and install it.
+**Android:** download `IzunaRecomp-0.2.2-android.apk` from the [v0.2.2 release](../../releases/tag/v0.2.2) and install it.
 
 > [!WARNING]
 > **The Android build is early: performance is poor at the moment** and still has to be optimised. It is
@@ -77,7 +78,7 @@ live in `~/.local/share/IzunaRecomp`. The rest of this section is the same.
    then **START GAME**. A controller is the way to play; **TOUCH CONTROLS** in the hub's main menu turns
    on-screen controls on, if you really want them.
 
-**PS5:** download the PS5 zip (v0.2.2 carries the unchanged `IzunaRecomp-0.2.1-ps5.zip`) and unzip it: you get a
+**PS5:** download `IzunaRecomp-0.2.1-ps5.zip` (from the [v0.2.2](../../releases/tag/v0.2.2) or [v0.2.1](../../releases/tag/v0.2.1) release) and unzip it: you get a
 folder named **`PPSA94203`**.
 
 1. Copy your extracted game (`default.xex`, every `.ng2` archive, the videos
@@ -101,10 +102,9 @@ game's shaders are built into the PS5 app, so there is no first-start wait.
    `default.xex`); it is remembered.
 3. **START GAME.**
 
-The first start takes longer: IzunaRecomp reads the game's shaders from your
-copy and compiles them for your GPU (a progress bar shows how far along it
-is). They are kept in `%LOCALAPPDATA%\IzunaRecomp\shaders`, so later starts
-skip this.
+The game's shaders are built in (since v0.2.2.1), so there is no shader build
+at the first start; the first time an area is seen, its pipelines are prepared
+behind a short progress bar.
 
 `ng2.exe` is built for processors with AVX2 (Intel since 2013, every AMD
 Ryzen); `ng2-compat.exe` is the same game for older processors, and `ng2.exe`
@@ -117,7 +117,7 @@ the release has the controls and the settings in detail.
   drivers chosen in the hub, the game's shaders built in, a controller or (if you insist) touch controls.
   Performance is poor for now.
 - **The Kasumi Renderer** — native Vulkan rendering of the whole game, with
-  the game's shaders recompiled from your copy at first start; any resolution
+  the game's shaders recompiled ahead of time and built in; any resolution
   (Auto: your screen's, or 720p to 2160p, each drawn at that true resolution),
   anti-aliasing, anisotropic filtering, output filters.
 - **Frame pacing** — V-Sync Auto follows your monitor (60, 120, 144 Hz…,

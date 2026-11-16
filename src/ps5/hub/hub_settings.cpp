@@ -11,6 +11,7 @@
 #include "izuna/izuna_gpu_driver.h"
 #include "ps5/hub/hub_ui.h"
 #include "izuna/izuna_keys.h"
+#include "izuna/izuna_touch.h"
 
 namespace ng2ps5::hub {
 
@@ -152,9 +153,14 @@ std::vector<Setting> Build() {
     t.push_back(std::move(s));
   }
   t.push_back(Ints(Tab::kDisplay, "Resolution",
+#if defined(__ANDROID__)
+                   "The resolution the game is drawn at. Auto is 1280 x 720 on Android: a phone's GPU is "
+                   "much faster there than at the screen's own 1080p. Higher is sharper and costs more GPU time.",
+#else
                    "The resolution the game is drawn at - each one a true resolution, shown pixel for pixel. "
                    "Auto matches your screen exactly (on a 16:10 or ultrawide screen the largest 16:9 picture "
                    "that fits, with bars). One above your screen is sharper still and costs more GPU time.",
+#endif
                    &Ng2Settings::pc_resolution, {0, 720, 768, 900, 1080, 1440, 1800, 2160},
                    {"Auto", "1280 x 720", "1366 x 768", "1600 x 900", "1920 x 1080", "2560 x 1440", "3200 x 1800",
                     "3840 x 2160"},
@@ -234,6 +240,38 @@ std::vector<Setting> Build() {
   }
   t.push_back(Ints(Tab::kGame, "Skip intro videos", "Goes straight to the title screen.", &Ng2Settings::video_mode,
                    {0, 2}, {"Off", "On"}, 0, false, true));
+#if defined(__ANDROID__)
+  {
+    // [IzunaRecomp] Where the touch controls are and how big (izuna_touch.h).
+    Setting s;
+    s.tab = Tab::kControls;
+    s.label = "Touch layout";
+    s.help = "Cross: move and resize the touch controls. Drag one where you want it; SMALLER / BIGGER change "
+             "the one you touched last; DONE keeps the layout. Square puts the default layout back.";
+    s.choices = {"Default", "Custom"};
+    s.get = [](const Ng2Settings& v) { return v.touch_layout.empty() ? 0 : 1; };
+    s.set = [](Ng2Settings& v, int i) {
+      if (i != 0) return;
+      v.touch_layout.clear();
+      izuna::touch::SetLayout("");
+    };
+    s.def = 0;
+    s.live = true;
+    s.unavailable = [](const Ng2Settings& v) {
+      return v.touch_controls ? std::string()
+                              : std::string("Turn on TOUCH CONTROLS first (the main menu).");
+    };
+    s.action = [](Ng2Settings& v) {
+      Ng2Settings* settings = &v;  // (the app's own, for as long as it runs)
+      izuna::touch::BeginEdit([settings](const std::string& layout) {
+        settings->touch_layout = layout;
+        settings->Save();
+      });
+      return false;
+    };
+    t.push_back(std::move(s));
+  }
+#endif
 #if !defined(__PROSPERO__)
   // [IzunaRecomp] --- Controls (a PC): the keyboard, every pad input on a key ---
   t.push_back(Toggle(Tab::kControls, "Keyboard controls",
@@ -326,8 +364,9 @@ std::vector<Setting> Build() {
     t.push_back(Strings(Tab::kDisplay, "GPU driver",
                         "The Vulkan driver the game draws with. The system's own (Qualcomm's) cannot run the game's "
                         "shaders; a Turnip driver can. Put a driver's .zip (AdrenoTools kind) in the drivers folder "
-                        "of the IzunaRecomp folder and start the app again to see it here. From the next start; if "
-                        "a driver keeps the game from starting, the system's is used the time after.",
+                        "of the IzunaRecomp folder and start the app again to see it here. START GAME restarts the app "
+                        "to load a newly chosen one; if a driver keeps the game from starting, the system's is used "
+                        "the time after.",
                         &Ng2Settings::gpu_driver, values, names, 0, true, false));
   }
 #endif
@@ -345,6 +384,20 @@ std::vector<Setting> Build() {
                      "you see it - the game normally lets you skip only the ones you have already watched.",
                      &Ng2Settings::skip_cutscenes_x, true, false, true));
   // --- Developer ---
+#if defined(__ANDROID__)
+  t.push_back(Ints(Tab::kDeveloper, "Turnip diagnosis",
+                   "For a Turnip GPU driver only. Notes writes Turnip's own performance notes to logs/mesa.log "
+                   "(where it draws in system memory instead of its fast tile memory, and why). Tile memory "
+                   "also asks it to draw in tile memory wherever it safely can; System memory never does - for "
+                   "comparing. From the next start (START GAME restarts the app).",
+                   &Ng2Settings::turnip_debug, {0, 1, 2, 3}, {"Off", "Notes", "Notes + tile memory", "Notes + system memory"},
+                   0, true, false));
+  t.push_back(Ints(Tab::kDeveloper, "Busy-waits",
+                   "How the game's threads wait for each other. Spin keeps waiting without a pause, so every "
+                   "frame is ready on time (smooth 60). Sleep rests the core after a millisecond: a cooler phone, "
+                   "but frames can miss the screen's refresh and look like 30. From the next start.",
+                   &Ng2Settings::busy_waits, {0, 1}, {"Spin (smooth)", "Sleep (cooler)"}, 0, true, false));
+#endif
   t.push_back(Toggle(Tab::kDeveloper, "Logging",
                      "Writes what happens in each session to the logs folder, for reporting a problem. Off "
                      "writes no log at all and skips the timing measured only for it. From the next start.",

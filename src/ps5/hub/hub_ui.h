@@ -156,6 +156,10 @@ struct Setting {
   // izuna::keys::kActions, -1 for an ordinary row. Cross waits for a key;
   // its value is the bound key (choices stay empty).
   int key = -1;
+  // [IzunaRecomp] A row Cross acts on (the touch layout editor): Square still
+  // puts the default back, Left / Right do nothing. True if it changed a
+  // setting.
+  std::function<bool(Ng2Settings&)> action;
 };
 const std::vector<Setting>& Settings();
 

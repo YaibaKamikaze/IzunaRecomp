@@ -669,6 +669,25 @@ bool SettingsList::Update(const PadState& pad, Ng2Settings& s, bool in_game) {
   }
   const Setting& row = *rows_[size_t(sel_)];
   const bool locked = (row.unavailable && !row.unavailable(s).empty()) || (in_game && row.restart);
+  if (row.action) {  // [IzunaRecomp] Cross acts, Square the default
+    if (!(pad.pressed & (kPadCross | kPadSquare)))
+      return false;
+    if (locked) {
+      PlaySound(Sound::kError);
+      nudge_ = 1;
+      return false;
+    }
+    if (pad.pressed & kPadSquare) {
+      if (row.get(s) == row.def)
+        return false;
+      row.set(s, row.def);
+      s.Clamp();
+      PlaySound(Sound::kChange);
+      return true;
+    }
+    PlaySound(Sound::kSelect);
+    return row.action(s);
+  }
   if (row.key >= 0) {  // [IzunaRecomp] a key binding: Cross waits for a key, Square the default
     if (!(pad.pressed & (kPadCross | kPadSquare)))
       return false;

@@ -58,6 +58,8 @@
 #include "native/native_shared_memory.h"  // [IzunaRecomp] test49 (every build)
 #include "izuna/izuna_touch.h"                // [IzunaRecomp] on-screen touch controls (Android)
 #include "izuna/izuna_gpu_driver.h"           // [IzunaRecomp] a chosen Vulkan driver package (Android)
+#include "izuna/izuna_android_perf.h"          // [IzunaRecomp] Android: CPU report
+#include "izuna/izuna_cpu_profile.h"           // [IzunaRecomp] sampling CPU profiler (test builds)
 #include <atomic>
 #include <chrono>
 #include <fstream>
@@ -104,9 +106,24 @@ class Ng2App : public rex::ReXApp {
     // buffer the GPU shares, for drivers that cannot import it (asked for when
     // the runtime builds the guest's memory, after the Vulkan device exists).
     ng2native::shared_memory::Install();
+    // [IzunaRecomp] Perf work: the sampling CPU profiler (Linux, Android) - TEST BUILDS ONLY.
+#if defined(IZUNA_TEST_BUILD)
+    izuna::cpu_profile::Start();
+#endif
 #if defined(__ANDROID__)
     // [IzunaRecomp] The Vulkan driver the player chose (Turnip), opened when the
     // Vulkan instance is made, just after this (izuna_gpu_driver.h).
+    // [IzunaRecomp] Turnip's own diagnosis (Developer tab): read by the driver as it
+    // starts, so set before it is loaded (just below).
+    if (settings_.turnip_debug > 0) {
+      const std::string mesa_log = (ng2ps5::paths::Logs() / "mesa.log").string();
+      setenv("MESA_LOG", "file", 1);
+      setenv("MESA_LOG_FILE", mesa_log.c_str(), 1);
+      const char* tu = settings_.turnip_debug == 2 ? "perf,gmem" : settings_.turnip_debug == 3 ? "perf,sysmem" : "perf";
+      setenv("TU_DEBUG", tu, 1);
+      REXLOG_INFO("Turnip diagnosis: TU_DEBUG={}, its notes in {}", tu, mesa_log);
+    }
+    turnip_debug_at_start_ = settings_.turnip_debug;
     if (const std::string failed = izuna::gpu_driver::Install(settings_.gpu_driver); !failed.empty()) {
       settings_.gpu_driver.clear();
       settings_.Save();
@@ -116,7 +133,9 @@ class Ng2App : public rex::ReXApp {
     // [IzunaRecomp] The on-screen touch controls: watched from the hub on, shown
     // only if the player turned them on (izuna_touch.h).
     izuna::touch::SetEnabled(settings_.touch_controls);
+    izuna::touch::SetLayout(settings_.touch_layout);
     izuna::touch::Install();
+    izuna::android_perf::Start();  // [IzunaRecomp] test56: the busiest threads and their cores
 #endif
     ApplyDisplaySettings();
     ApplyTuning();
@@ -319,6 +338,15 @@ class Ng2App : public rex::ReXApp {
         hub_open_.store(false, std::memory_order_release);
         settings_.Clamp();
         settings_.Save();
+#if defined(__ANDROID__)
+        // [IzunaRecomp] A GPU driver is loaded only as the app starts: another
+        // one chosen in the hub restarts the app (back to the hub, with it).
+        if (settings_.gpu_driver != izuna::gpu_driver::Requested() || settings_.turnip_debug != turnip_debug_at_start_) {
+          REXLOG_INFO("GPU driver changed in the hub: restarting the app to load it");
+          ReturnToMenu();
+          return;
+        }
+#endif
         if (!imports.empty())
           ng2::QueueSaveImports(imports);
         ApplyDisplaySettings();
@@ -1042,6 +1070,12 @@ class Ng2App : public rex::ReXApp {
       if (s[0] == settings_.pc_resolution) width = s[1];
     int sw = 0, sh = 0;
     const bool screen = izuna::pc::ScreenSize(&sw, &sh);
+#if defined(__ANDROID__)
+    // [IzunaRecomp] Android: Auto is 720p. A phone's GPU spent 19-29 ms on the
+    // 3D scene alone at the Thor's 1080p (test56: 29-41 ms a frame, GPU-bound);
+    // a size can still be chosen.
+    if (!width) width = 1280;
+#endif
     if (!width) {
       // Auto: the largest 16:9 picture that fits the screen (fullscreen) or the
       // window, drawn at exactly that size - a 1920x1200 screen gets 1920x1080
@@ -1301,6 +1335,27 @@ class Ng2App : public rex::ReXApp {
     Ng2Tuning::Apply(
         rex::filesystem::GetExecutableFolder() / "cache" / "ng2_tuning.toml",
         entries);
+    ApplyOverrides(rex::filesystem::GetExecutableFolder() / "izuna_overrides.toml");
+  }
+
+  // [IzunaRecomp] izuna_overrides.toml beside the program (if there is one):
+  // settings by name ("name = value", one a line), applied over the generated
+  // tuning - for testing a switch without a new build. Each one is logged.
+  static void ApplyOverrides(const std::filesystem::path& path) {
+    std::error_code ec;
+    if (!std::filesystem::exists(path, ec)) return;
+    rex::cvar::LoadConfig(path);
+    std::ifstream in(path);
+    std::string line;
+    while (std::getline(in, line)) {
+      const size_t eq = line.find('=');
+      if (line.empty() || line[0] == '#' || eq == std::string::npos) continue;
+      std::string name = line.substr(0, eq);
+      while (!name.empty() && (name.back() == ' ' || name.back() == '\t')) name.pop_back();
+      while (!name.empty() && (name.front() == ' ' || name.front() == '\t')) name.erase(0, 1);
+      if (name.empty()) continue;
+      REXLOG_INFO("Override (izuna_overrides.toml): {} (now {})", line, rex::cvar::GetFlagByName(name));
+    }
   }
 
   // NG2_DUMP_CVARS=<path> writes every registered cvar - name, category, type,
@@ -1566,7 +1621,10 @@ class Ng2App : public rex::ReXApp {
     explicit TouchOverlay(rex::ui::ImGuiDrawer* drawer) : rex::ui::ImGuiDialog(drawer) {}
 
    protected:
-    void OnDraw(ImGuiIO& io) override { izuna::touch::Draw(io.DisplaySize.x, io.DisplaySize.y); }
+    void OnDraw(ImGuiIO& io) override {
+      izuna::touch::Draw(io.DisplaySize.x, io.DisplaySize.y);
+      izuna::android_perf::PaceWindow();  // (each frame: acts on a new window, else every 5 s)
+    }
   };
   std::unique_ptr<TouchOverlay> touch_overlay_;
 #endif
@@ -1583,6 +1641,7 @@ class Ng2App : public rex::ReXApp {
 
   std::filesystem::path game_data_root_;  // (the game's folder: [replace] mods read its archives)
   bool shutting_down_ = false;
+  int turnip_debug_at_start_ = 0;  // [IzunaRecomp] (Android: a change restarts the app at START GAME)
 
   // Watches for the guest terminating the title. See OnPostLaunchModule.
   std::thread title_watcher_;

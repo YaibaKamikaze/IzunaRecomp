@@ -91,6 +91,7 @@ namespace draw {
   X(CreateDescriptorSetLayout) X(CreateDescriptorPool) X(AllocateDescriptorSets)                     \
   X(UpdateDescriptorSets) X(CreateGraphicsPipelines) X(CreateSampler) X(CmdBindPipeline)             \
   X(CmdBindDescriptorSets) X(CmdPushConstants) X(CmdSetViewport) X(CmdSetScissor) X(CmdDraw)         \
+  X(CmdBindIndexBuffer) X(CmdDrawIndexed)                                                            \
   X(CmdPipelineBarrier) X(CmdCopyImage) X(CmdBlitImage) X(CmdClearColorImage) X(CmdClearAttachments) \
   X(CmdClearDepthStencilImage) X(CmdSetBlendConstants) X(CmdSetStencilReference) X(CmdCopyBufferToImage)  \
   X(CreatePipelineCache) X(GetPipelineCacheData) X(CmdCopyImageToBuffer) X(CmdSetDepthBias)          \
@@ -312,6 +313,7 @@ constexpr uint32_t kRectList = 0x100;  // PipelineKey::topology flag: a triangle
 // Xenos 20e4 format, the pixel shaders take depth to its precision (depth-only
 // draws: shaders/depth24.frag).
 constexpr uint32_t kSpecFloat24Depth = 1u << 8;
+bool Float24Depth();  // [IzunaRecomp] (native_draw.cpp: off on Android)
 constexpr uint32_t kSpecAlphaToMask = 1u << 9;  // (the fork's SPEC_CONSTANT_ALPHA_TO_MASK: ng2AlphaToMask)
 // [IzunaRecomp] ... on a 2x MSAA target: coverage as alpha, blended (the fork's
 // SPEC_CONSTANT_ALPHA_TO_MASK_MSAA; native_draw.cpp, Draw).
@@ -326,6 +328,7 @@ constexpr VkDeviceSize kFrameUpload = 64u << 20;  // per frame (constants, Begin
 // at 2704: each slot's scale per axis (g_SlotScale).
 constexpr uint32_t kVsBytes = 4096, kPsBytes = 4096, kSharedBytes = 2960, kFetchBytes = 768;
 constexpr uint32_t kSharedLayoutEnd = 2688;
+constexpr VkDeviceSize kUboWindow = 4096;  // [IzunaRecomp] the largest constant block (set 5's windows)
 
 inline VkFormat ColorFormat(uint32_t xenos) {
   switch (xenos) {
@@ -391,6 +394,20 @@ struct State {
   std::array<VkDescriptorSetLayout, 5> set_layouts{};
   VkDescriptorPool pool = VK_NULL_HANDLE;
   std::array<VkDescriptorSet, 5> sets{};
+  // [IzunaRecomp] Set 5: the constants as three dynamic uniform buffers over
+  // the upload buffer (vertex, pixel, shared - shader_common.h); each draw
+  // binds it with the offsets of its blocks (perf: a GPU keeps a uniform
+  // buffer in its constant storage, a device-address load is a memory read).
+  VkDescriptorSetLayout ubo_layout = VK_NULL_HANDLE;
+  VkDescriptorPool ubo_pool = VK_NULL_HANDLE;
+  VkDescriptorSet ubo_set = VK_NULL_HANDLE;
+  // [IzunaRecomp] Set 6: the game's memory as storage buffers (bindings 0-3,
+  // chunks of 2^guest_shift bytes) and the frame's upload space (binding 4,
+  // dynamic: the frame's half) - the shaders read no device addresses.
+  VkDescriptorSetLayout ssbo_layout = VK_NULL_HANDLE;
+  VkDescriptorPool ssbo_pool = VK_NULL_HANDLE;
+  VkDescriptorSet ssbo_set = VK_NULL_HANDLE;
+  uint32_t guest_shift = 29;
   // Pipelines are built on worker threads (a big shader can take seconds on
   // the console's driver - one never finished and froze the game); a draw
   // whose pipeline is not ready yet is skipped.
@@ -509,6 +526,10 @@ struct State {
     float bias[3] = {};
     uint64_t push[5] = {};
     bool push_valid = false;
+    uint32_t ubo_offsets[4] = {};
+    bool ubo_valid = false;
+    uint32_t ssbo_offset = 0;
+    bool ssbo_valid = false;
   } dyn;
   // [diag] The last colour target written at each EDRAM base (format | pitch
   // << 8): a resolve reading a base in another format or pitch reads what the
@@ -540,6 +561,21 @@ struct State {
   };
   std::array<PassLabel, 256> pass_labels{};
   uint64_t pass_frame = 0;  // the logged frame whose timestamps are pending (0: none)
+  // [IzunaRecomp] test71: each draw of a profiled frame (izuna_gpu_profile),
+  // timed - which draws the GPU time goes to (ReadPassTimes reports them).
+  static constexpr uint32_t kDrawQueries = 2048;
+  VkQueryPool draw_queries = VK_NULL_HANDLE;
+  uint32_t draw_count = 0;  // timestamps written (0: no profiled frame)
+  struct DrawLabel {
+    uint64_t vs = 0, ps = 0;
+    uint32_t prim = 0, vertices = 0, pass = 0, target = 0;
+    bool indexed = false;
+    // (test73: the draw's state, for the costliest ones)
+    uint32_t spec = 0, raster = 0, blend = 0, depth_control = 0, color_format = 0;
+    uint32_t aniso = 0, tex_w = 0, tex_h = 0, textures = 0;
+  };
+  uint32_t prof_aniso = 0, prof_tex_w = 0, prof_tex_h = 0, prof_textures = 0;  // (this draw's, while profiled)
+  std::vector<DrawLabel> draw_labels;
   uint64_t resolve_generation = 0;
   std::vector<Image> placeholders;               // 2D, 3D, cube, 1D (descriptor 0 of each table)
   struct Texture {
@@ -603,8 +639,9 @@ struct State {
   std::vector<uint32_t> free_descriptors, free_descriptors_1d, free_descriptors_cube;
   VkSampler sampler = VK_NULL_HANDLE;
   // Primitive-reset strips as triangle lists (ResetStripToList), converted
-  // once per index buffer and kept in mapped arenas until the arenas fill
-  // (then all are dropped, freed 3 frames on, and converted again).
+  // once per index buffer and kept in ordinary memory (copied into the
+  // frame's upload space per draw), until they add up to kMaxListBytes (then
+  // all are dropped and converted again as drawn).
   struct MappedBuffer {
     VkBuffer buffer = VK_NULL_HANDLE;
     VkDeviceMemory memory = VK_NULL_HANDLE;
@@ -612,8 +649,11 @@ struct State {
     uint64_t address = 0;
   };
   struct StripList {
-    uint64_t hash = 0, address = 0, checked_frame = 0;
-    uint32_t vertices = 0;
+    uint64_t hash = 0, checked_frame = 0;
+    std::vector<uint32_t> list32;  // (32-bit indices)
+    std::vector<uint16_t> list16;  // (16-bit indices)
+    uint32_t count = 0;            // (0: not converted)
+    bool wide = false;
     bool dynamic = false;  // (its indices changed: checked every frame, until they settle)
     uint32_t steady = 0;   // (checks in a row without a change while dynamic)
   };
@@ -623,11 +663,8 @@ struct State {
   // change (a level's load writing it) kept it hashed every frame for the rest
   // of the session (test28: ~70 textures, 2.3 MB hashed a frame).
   static constexpr uint32_t kSettleChecks = 180;
-  std::vector<MappedBuffer> list_arenas;
-  VkDeviceSize list_used = 0;  // (in the last arena)
-  std::vector<std::pair<uint64_t, MappedBuffer>> retired_arenas;
-  std::vector<MappedBuffer> free_arenas;  // [IzunaRecomp] (made at DrawInit, retired ones back here: never allocated in play)
-  std::vector<uint32_t> list_scratch;
+  size_t list_bytes = 0;  // (all the converted lists)
+  static constexpr size_t kMaxListBytes = size_t(64) << 20;
   // Upload ring: two frame halves, host-visible, device-addressed.
   VkBuffer upload = VK_NULL_HANDLE;
   // Depth resolves go depth image -> this buffer -> a float texture (Vulkan
@@ -642,6 +679,7 @@ struct State {
   bool rendering = false;
   std::array<const Image*, 4> bound_colors{};
   const Image* bound_depth = nullptr;
+  uint32_t pass_draws = 0;  // [IzunaRecomp] (draws recorded in the current render pass)
   uint32_t last_resolved = 0;
   // The window scissor (OnWindowScissor; the drawing thread's: the worker's
   // with native_threaded), as the GPU register holds it. Reset: unclipped.
@@ -737,6 +775,13 @@ struct ScopedTime {
 };
 
 // A clear between OnClearBegin and OnClearEnd (and the record the worker replays).
+// [IzunaRecomp] A draw's indices, little-endian, as GuestIndices converted them.
+struct IndexList {
+  const void* data = nullptr;
+  uint32_t count = 0;
+  bool wide = false;  // (32-bit; else 16-bit)
+};
+
 struct PendingClear {
   bool pending = false;
   uint32_t device = 0, flags = 0, stencil = 0;

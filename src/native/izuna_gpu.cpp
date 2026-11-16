@@ -180,6 +180,12 @@ class IzunaGraphicsSystem final : public rex::system::IGraphicsSystem {
 
   // VdSwap (the SDK kernel), at its place in the game's calls: the native frame.
   void OnGuestSwap() override {
+    {  // [IzunaRecomp] guest vblanks since the last swap (frame pacing: 1 each at a steady 60)
+      const uint64_t v = vblanks_.load(std::memory_order_relaxed);
+      const uint64_t d = v - swap_vblank_;
+      swap_vblank_ = v;
+      vblanks_per_swap_[std::min<uint64_t>(d, 3)].fetch_add(1, std::memory_order_relaxed);
+    }
     Step([this] {
       counter_.fetch_add(1, std::memory_order_relaxed);
       if (++swaps_ % 600 == 0) LogCounts();
@@ -441,6 +447,11 @@ class IzunaGraphicsSystem final : public rex::system::IGraphicsSystem {
     REXLOG_INFO("[izuna] last 600 swaps: {} fences, {} callbacks, {} flips ({} waits had to wait, {:.1f} ms in "
                 "all)",
                 n(kFence), n(kInterrupt), n(kFlip), waits_blocked_.exchange(0), double(wait_ns_.exchange(0)) / 1e6);
+    uint64_t per[4];
+    for (int i = 0; i < 4; ++i) per[i] = vblanks_per_swap_[i].exchange(0, std::memory_order_relaxed);
+    REXLOG_INFO("[izuna] guest vblanks between swaps: none {}, one {}, two {}, three or more {} (a steady 60: all "
+                "one)",
+                per[0], per[1], per[2], per[3]);
     uint64_t pending[4];
     for (int i = 0; i < 4; ++i) pending[i] = pending_at_vblank_[i].exchange(0);
     if (pending[0] + pending[1] + pending[2] + pending[3]) {
@@ -454,6 +465,7 @@ class IzunaGraphicsSystem final : public rex::system::IGraphicsSystem {
 
   void MarkVblank() {
     rex::ps5diag::Add(rex::ps5diag::kVblanks);
+    vblanks_.fetch_add(1, std::memory_order_relaxed);
     counter_.fetch_add(1, std::memory_order_relaxed);
     DispatchInterrupt(0, 2);
     WakeWaits();  // (the handler clears NG2's flip-pending word: the timeline's vsync wait)
@@ -645,6 +657,10 @@ class IzunaGraphicsSystem final : public rex::system::IGraphicsSystem {
   std::array<uint32_t, 256> gamma_{};  // red << 20 | green << 10 | blue, 10 bits each
   uint32_t interrupt_callback_ = 0, interrupt_data_ = 0;
   std::atomic<uint64_t> counter_{0};  // swaps and vblanks (the hardware's, for timestamps)
+  // [IzunaRecomp] Guest vblanks alone, and how many came between two swaps
+  // (0, 1, 2, 3+; swap_vblank_: the game's render thread's).
+  std::atomic<uint64_t> vblanks_{0}, vblanks_per_swap_[4]{};
+  uint64_t swap_vblank_ = 0;
   uint64_t swaps_ = 0;                // (the effect thread's)
   // WaitWord (waits_mutex_).
   std::mutex waits_mutex_;

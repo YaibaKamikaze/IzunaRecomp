@@ -35,18 +35,94 @@
 
 #ifdef __spirv__
 
+#ifndef NG2_RECOMP  // ([IzunaRecomp] NG2's shaders take everything from descriptors: sets 5 and 6)
 struct PushConstants
 {
     uint64_t VertexShaderConstants;
     uint64_t PixelShaderConstants;
     uint64_t SharedConstants;
-#ifdef NG2_RECOMP
-    uint64_t GuestMemory;     // [ng2] the game's physical memory, read in place
-    uint64_t FetchConstants;  // [ng2] the 32 fetch slots (6 dwords each), host-endian
-#endif
 };
 
 [[vk::push_constant]] ConstantBuffer<PushConstants> g_PushConstants;
+#endif
+
+#ifdef NG2_RECOMP
+// [IzunaRecomp] The constants as uniform buffers - set 5, dynamic offsets into
+// the frame's upload buffer (native_draw.cpp) - not as loads through buffer
+// device addresses: a GPU keeps a uniform buffer in its constant storage
+// (Adreno: on-chip), where a device-address load is a memory read in every
+// invocation (Android: the 3D scene 19-29 ms a frame, test56).
+struct Ng2Float4Block { float4 c[256]; };
+struct Ng2SharedBlock { uint4 v[185]; };  // (kSharedBytes, 2960)
+[[vk::binding(0, 5)]] ConstantBuffer<Ng2Float4Block> g_VertexConstantBlock;
+[[vk::binding(1, 5)]] ConstantBuffer<Ng2Float4Block> g_PixelConstantBlock;
+[[vk::binding(2, 5)]] ConstantBuffer<Ng2SharedBlock> g_SharedConstantBlock;
+#define VertexShaderConstantsAt(i) g_VertexConstantBlock.c[i]
+#define PixelShaderConstantsAt(i) g_PixelConstantBlock.c[i]
+uint ng2SharedU(uint off) { return g_SharedConstantBlock.v[off >> 4][(off >> 2) & 3]; }
+uint2 ng2SharedU2(uint off) { return uint2(ng2SharedU(off), ng2SharedU(off + 4)); }
+uint4 ng2SharedU4(uint off) { return g_SharedConstantBlock.v[off >> 4]; }
+float ng2SharedF(uint off) { return asfloat(ng2SharedU(off)); }
+float2 ng2SharedF2(uint off) { return asfloat(ng2SharedU2(off)); }
+float4 ng2SharedF4(uint off) { return asfloat(ng2SharedU4(off)); }
+#endif
+
+#ifdef NG2_RECOMP
+// [IzunaRecomp] No 64-bit addresses in the shaders: the fetch constants are a
+// fourth uniform buffer, and the game's memory is read through storage
+// buffers with 32-bit offsets (set 6). A device-address load is a memory read
+// whose 64-bit address math a GPU without 64-bit integers (Adreno) emulates
+// instruction by instruction - every vertex attribute paid for it (the 3D
+// scene 24-37 ms a frame on a Snapdragon 8 Gen 2, test58).
+//   set 5 binding 3: the 32 vertex / texture fetch slots, 6 dwords each
+//   set 6 binding 0, an array of 4: the 512 MB of game memory, in chunks of 2^shift bytes
+//     (SharedConstants + 0: the shift; 29 = one chunk; Adreno 27 = four)
+//   set 6 binding 4: the frame's upload space - vertices handed over by the
+//     game (BeginVertices: SharedConstants + 8 bit 0, at + 4) and a strip
+//     index list (at + 12)
+struct Ng2FetchBlock { uint4 v[48]; };
+[[vk::binding(3, 5)]] ConstantBuffer<Ng2FetchBlock> g_FetchConstantBlock;
+// [IzunaRecomp] izuna-shaders 8: the chunks as one array, indexed - one load
+// instruction per guest load. Branching between four separately bound buffers
+// put every load site in four times (and the 16-byte load's fallback four
+// times again): the game's vertex shaders compiled to a median 2,749
+// instructions on Adreno (test70's pipeline statistics), the fetches most of it.
+[[vk::binding(0, 6)]] RWByteAddressBuffer g_Guest[4];
+[[vk::binding(4, 6)]] RWByteAddressBuffer g_UploadView;
+uint2 ng2FetchConstant(uint slot)
+{
+    const uint4 q = g_FetchConstantBlock.v[slot >> 1];
+    return (slot & 1u) ? q.zw : q.xy;
+}
+// A dword of game memory (at: a byte address below 512 MB, 4-aligned).
+uint ng2GuestLoad(uint at)
+{
+    if (ng2SharedU(8) & 1u) return g_UploadView.Load(ng2SharedU(4) + at);
+    const uint s = ng2SharedU(0);
+    return g_Guest[NonUniformResourceIndex(at >> s)].Load(at & ((1u << s) - 1u));
+}
+uint4 ng2GuestLoad4(uint at)
+{
+    if (ng2SharedU(8) & 1u) return g_UploadView.Load4(ng2SharedU(4) + at);
+    const uint s = ng2SharedU(0);
+    const uint off = at & ((1u << s) - 1u);
+    if (off <= (1u << s) - 16u) return g_Guest[NonUniformResourceIndex(at >> s)].Load4(off);
+    // (across two chunks: dword by dword)
+    uint4 r;
+    [unroll] for (uint i = 0; i < 4; ++i)
+    {
+        const uint a = at + i * 4u;
+        r[i] = g_Guest[NonUniformResourceIndex(a >> s)].Load(a & ((1u << s) - 1u));
+    }
+    return r;
+}
+void ng2GuestStore(uint at, uint v)
+{
+    if (ng2SharedU(8) & 1u) { g_UploadView.Store(ng2SharedU(4) + at, v); return; }
+    const uint s = ng2SharedU(0);
+    g_Guest[NonUniformResourceIndex(at >> s)].Store(at & ((1u << s) - 1u), v);
+}
+#endif
 
 #ifdef NG2_RECOMP
 // [ng2] Vertex fetch from raw guest memory, for the shaders whose containers
@@ -102,7 +178,7 @@ void ng2MemExport(float4 eA, uint element, float4 data)
     // SharedConstants + 976: nonzero = the native renderer does the memory
     // exports. Zero while the emulator still runs the memexport draws itself
     // (hybrid mode) - writing them twice corrupts guest memory.
-    if (vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 976, 4) == 0)
+    if (ng2SharedU(976) == 0)
         return;
     const uint4 a = asuint(eA);
     if ((a.x >> 30) != 1u || any((a.yzw >> 23) != 0x96u))
@@ -144,10 +220,10 @@ void ng2MemExport(float4 eA, uint element, float4 data)
     if (endian == 4u) { packed = packed.yxwz; endian = 2u; }
     else if (endian == 5u) { packed = packed.wzyx; endian = 2u; }
     packed = uint4(ng2Swap(packed.x, endian), ng2Swap(packed.y, endian), ng2Swap(packed.z, endian), ng2Swap(packed.w, endian));
-    const uint64_t p = g_PushConstants.GuestMemory + (((a.x << 2) + index * bytes) & 0x1FFFFFFFu);
-    vk::RawBufferStore<uint>(p, packed.x, 4);
-    if (bytes >= 8) vk::RawBufferStore<uint>(p + 4, packed.y, 4);
-    if (bytes >= 16) { vk::RawBufferStore<uint>(p + 8, packed.z, 4); vk::RawBufferStore<uint>(p + 12, packed.w, 4); }
+    const uint p = ((a.x << 2) + index * bytes) & 0x1FFFFFFCu;
+    ng2GuestStore(p, packed.x);
+    if (bytes >= 8) ng2GuestStore((p + 4u) & 0x1FFFFFFCu, packed.y);
+    if (bytes >= 16) { ng2GuestStore((p + 8u) & 0x1FFFFFFCu, packed.z); ng2GuestStore((p + 12u) & 0x1FFFFFFCu, packed.w); }
 }
 
 // [ng2] Vertex fetch k of the shader, with the fields the renderer decoded
@@ -173,11 +249,10 @@ static bool ng2RestartVertex = false;
 
 uint ng2VertexIndex(uint id)
 {
-    const uint4 ix = vk::RawBufferLoad<uint4>(g_PushConstants.SharedConstants + 960, 4);
+    const uint4 ix = ng2SharedU4(960);
     if (ix.w == 2u)
     {
-        const uint2 list = vk::RawBufferLoad<uint2>(g_PushConstants.SharedConstants + 1016, 8);
-        return vk::RawBufferLoad<uint>(((uint64_t(list.y) << 32) | list.x) + id * 4u, 4) + ix.z;
+        return g_UploadView.Load(ng2SharedU(12) + id * 4u) + ix.z;
     }
     if (ix.w == 1u)
     {
@@ -190,16 +265,16 @@ uint ng2VertexIndex(uint id)
         const uint endian = (ix.y >> 1) & 3u;
         if (ix.y & 1u)
         {
-            v = ng2Swap(vk::RawBufferLoad<uint>(g_PushConstants.GuestMemory + ((ix.x + id * 4u) & 0x1FFFFFFCu), 4), endian);
+            v = ng2Swap(ng2GuestLoad((ix.x + id * 4u) & 0x1FFFFFFCu), endian);
         }
         else
         {
             const uint a = ix.x + id * 2u;
-            const uint w = ng2Swap(vk::RawBufferLoad<uint>(g_PushConstants.GuestMemory + (a & 0x1FFFFFFCu), 4), endian);
+            const uint w = ng2Swap(ng2GuestLoad(a & 0x1FFFFFFCu), endian);
             v = (a & 2u) ? (w >> 16) : (w & 0xFFFFu);
         }
         // y bit 3: primitive reset on (PA_SU_SC_MODE_CNTL), reset index at + 980
-        if ((ix.y & 8u) && v == vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 980, 4))
+        if ((ix.y & 8u) && v == ng2SharedU(980))
             ng2RestartVertex = true;
     }
     return v + ix.z;
@@ -207,7 +282,7 @@ uint ng2VertexIndex(uint id)
 
 float4 ng2VertexFetch(uint slot, float indexValue, uint stride, int offset, uint format, uint flags, int expAdjust)
 {
-    const uint2 fc = vk::RawBufferLoad<uint2>(g_PushConstants.FetchConstants + slot * 8, 4);
+    const uint2 fc = ng2FetchConstant(slot);
     const uint base = fc.x & 0x1FFFFFFCu;
     const uint endian = fc.y & 3u;
     const int index = (flags & 1) ? int(round(indexValue)) : int(floor(indexValue));
@@ -215,7 +290,7 @@ float4 ng2VertexFetch(uint slot, float indexValue, uint stride, int offset, uint
     // the guest's memory - a GPU page fault kills the app on the console; the
     // 16-byte read below stays inside it too)
     const uint at = min((base + uint(index * int(stride) + offset) * 4u) & 0x1FFFFFFCu, 0x1FFFFFF0u);
-    uint4 w = vk::RawBufferLoad<uint4>(g_PushConstants.GuestMemory + at, 4);
+    uint4 w = ng2GuestLoad4(at);
     w = uint4(ng2Swap(w.x, endian), ng2Swap(w.y, endian), ng2Swap(w.z, endian), ng2Swap(w.w, endian));
     // [ng2] One decode for every format (a switch of whole decodes, inlined
     // for each fetch, made the shaders several times bigger and slow to
@@ -278,7 +353,7 @@ float4 ng2VertexFetch(uint slot, float indexValue, uint stride, int offset, uint
 
 float4 ng2VertexFetchK(uint k, float indexValue)
 {
-    const uint4 p = vk::RawBufferLoad<uint4>(g_PushConstants.SharedConstants + 1664 + k * 16, 4);
+    const uint4 p = ng2SharedU4(1664 + k * 16);
     const float4 r = ng2VertexFetch(p.x & 0xFFu, indexValue, p.x >> 8, int(p.y), p.z, p.w & 0xFFu, int(p.w << 16) >> 24);
     // [ng2] The instruction's destination swizzle as it is in guest memory at
     // the draw (p.w bits 16-27, 3 bits a component: 0-3 X-W, 4 zero, 5 one):
@@ -299,39 +374,39 @@ float4 ng2VertexFetchK(uint k, float indexValue)
 #endif
 
 #ifdef REEOT_RECOMP
-#define g_Booleans(i)              vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 320 + (i)*4)
-#define g_SwappedTexcoords         vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 352)
-#define g_HalfPixelOffset          vk::RawBufferLoad<float2>(g_PushConstants.SharedConstants + 356)
-#define g_AlphaThreshold           vk::RawBufferLoad<float>(g_PushConstants.SharedConstants + 364)
+#define g_Booleans(i)              ng2SharedU(320 + (i)*4)
+#define g_SwappedTexcoords         ng2SharedU(352)
+#define g_HalfPixelOffset          ng2SharedF2(356)
+#define g_AlphaThreshold           ng2SharedF(364)
 #ifdef NG2_RECOMP
-#define g_AlphaFunc                vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 952)
-#define g_AlphaToMaskOffsets       vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 956)
+#define g_AlphaFunc                ng2SharedU(952)
+#define g_AlphaToMaskOffsets       ng2SharedU(956)
 #endif
-#define g_SwappedNormals           vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 368)
-#define g_SwappedBinormals         vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 372)
-#define g_SwappedTangents          vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 376)
-#define g_SwappedBlendWeights      vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 380)
-#define g_SwappedPositions         vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 384)
-#define g_SintTexcoords            vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 388)
-#define g_BiasedTextures           vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 392)
-#define g_PackedDec3               vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 396)
-#define g_LoopConstants(i)         vk::RawBufferLoad<uint4>(g_PushConstants.SharedConstants + 400 + (i)*16)
-#define g_PosScale                 vk::RawBufferLoad<float4>(g_PushConstants.SharedConstants + 912)
-#define g_PosOffset                vk::RawBufferLoad<float4>(g_PushConstants.SharedConstants + 928)
+#define g_SwappedNormals           ng2SharedU(368)
+#define g_SwappedBinormals         ng2SharedU(372)
+#define g_SwappedTangents          ng2SharedU(376)
+#define g_SwappedBlendWeights      ng2SharedU(380)
+#define g_SwappedPositions         ng2SharedU(384)
+#define g_SintTexcoords            ng2SharedU(388)
+#define g_BiasedTextures           ng2SharedU(392)
+#define g_PackedDec3               ng2SharedU(396)
+#define g_LoopConstants(i)         ng2SharedU4(400 + (i)*16)
+#define g_PosScale                 ng2SharedF4(912)
+#define g_PosOffset                ng2SharedF4(928)
 #ifdef NG2_RECOMP
 // [ng2] Resolution scale: the native renderer draws its targets S times the
 // guest's size. 1/S turns vPos back into guest pixels; the slots holding
 // such images (resolves) take a fetch's texel offset - in guest texels - x S.
-#define g_RenderScaleInv           vk::RawBufferLoad<float>(g_PushConstants.SharedConstants + 944)
-#define g_ScaledSlots              vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 948)
+#define g_RenderScaleInv           ng2SharedF(944)
+#define g_ScaledSlots              ng2SharedU(948)
 // [IzunaRecomp] The scale of the scaled slots' images, apart from the target's
 // (g_RenderScaleInv): at 1.5x the renderer keeps its small targets at 1x, and a
 // draw into one samples the 1.5x scene (SharedConstants + 2688).
-#define g_TextureScale             vk::RawBufferLoad<float>(g_PushConstants.SharedConstants + 2688)
+#define g_TextureScale             ng2SharedF(2688)
 // [IzunaRecomp] Per axis: the target's inverse scale (the game's 3D scene is
 // scaled apart horizontally and vertically, so its final stretch lands 1:1),
 // and each scaled slot's own scale (SharedConstants + 2704 + slot * 8).
-#define g_RenderScaleInv2          vk::RawBufferLoad<float2>(g_PushConstants.SharedConstants + 2696, 8)
+#define g_RenderScaleInv2          ng2SharedF2(2696)
 // [IzunaRecomp] An interpolated input as the Xenos interpolator gives it: a
 // value the same at a triangle's three corners comes back exactly that value.
 // A PC GPU's perspective-correct interpolation returns it a few ulps off
@@ -370,22 +445,22 @@ float ng2DepthTo24(float z)
 // signed byte per slot at SharedConstants + 984.
 float ng2ExpAdjust(uint slot)
 {
-    const uint w = vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 984 + (slot & ~3u), 4);
+    const uint w = ng2SharedU(984 + (slot & ~3u));
     const int e = int(w << (24u - 8u * (slot & 3u))) >> 24;
     return e != 0 ? exp2(float(e)) : 1.0;
 }
 float2 ng2OffsetScale(uint slot)
 {
     return ((g_ScaledSlots >> slot) & 1u) != 0u
-        ? vk::RawBufferLoad<float2>(g_PushConstants.SharedConstants + 2704 + slot * 8, 8)
+        ? ng2SharedF2(2704 + slot * 8)
         : float2(1.0, 1.0);
 }
 #endif
 #else
-#define g_Booleans                 vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 256)
-#define g_SwappedTexcoords         vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 260)
-#define g_HalfPixelOffset          vk::RawBufferLoad<float2>(g_PushConstants.SharedConstants + 264)
-#define g_AlphaThreshold           vk::RawBufferLoad<float>(g_PushConstants.SharedConstants + 272)
+#define g_Booleans                 ng2SharedU(256)
+#define g_SwappedTexcoords         ng2SharedU(260)
+#define g_HalfPixelOffset          ng2SharedF2(264)
+#define g_AlphaThreshold           ng2SharedF(272)
 #endif
 
 [[vk::constant_id(0)]] const uint g_SpecConstants = 0;

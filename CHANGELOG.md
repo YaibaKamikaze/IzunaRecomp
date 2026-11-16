@@ -1,5 +1,42 @@
 # Changelog
 
+## v0.2.2.1 — Windows and Linux performance update
+
+A performance update for **Windows** and **Linux** (the Steam Deck included), from a rework of how the game
+is recompiled and drawn. Android and PS5 are unchanged in this release: use v0.2.2 for Android (its
+optimisation is still in progress) and v0.2.1 for the PS5.
+
+**Recompiler**
+- The game's memory reads and writes are now ordinary ones the C++ compiler can optimise (before, every
+  one was forced to happen exactly as written), with the waits between threads kept correct.
+- The recompiler finds the game's busy-wait loops (41 of them, the main loop's wait for the render thread
+  among them) and makes them pause, then let other threads run, instead of spinning flat out. They do not
+  sleep: a sleep woke too late for the game's handoffs between its threads, so frames missed the screen's
+  refresh and 60 fps looked like 30.
+- Linux: calls between the game's functions are direct calls again (a "large code model" setting had made
+  every one an indirect call).
+- Linux: timed waits no longer spin through their last millisecond.
+- Direct3D's copies of its state into a command stream that the renderer never reads are skipped.
+
+**Renderer**
+- The game's shaders are built into the program, as on Android and the PS5: no shader build at the first
+  start, and no `dxcompiler.dll` / DXC libraries in the release.
+- The game's shaders read its memory and constants without 64-bit addresses, as plain uniform and storage
+  buffers — lighter for the GPU (the Steam Deck's 3D scene pass went from 5–17 ms to about 3–4 ms).
+- Strip index lists are kept in ordinary memory (no slow reads back from GPU-shared memory).
+- The game's index buffers are drawn as Vulkan index buffers, so the GPU reuses transformed vertices.
+- Whole-surface clears at the start of a pass are done as the pass's own clear.
+- The renderer hands its work to the GPU every 128 draws as well as at the end of a frame, so each
+  frame is ready in time for the screen's next refresh.
+
+**Linux**
+- RenderDoc is no longer loaded just because it is installed (SteamOS has it): it was hooking every
+  Vulkan call of the session.
+
+**Testing**
+- An `izuna_overrides.toml` file beside the program (optional) sets any setting by name, for trying a
+  switch without a new build; each one is logged. The log also counts the vblanks between frames.
+
 ## v0.2.2 — Android, Linux on AMD and Intel GPUs, Windows fixes
 
 > [!WARNING]

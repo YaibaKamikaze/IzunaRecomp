@@ -762,7 +762,7 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
                         {
                             // [ng2] A single named constant indexed relatively: the
                             // name is one register, the read is not - by register.
-                            regFormatted = fmt::format("vk::RawBufferLoad<float4>(g_PushConstants.{}ShaderConstants + clamp({}{}, 0, 255) * 16, 0x10)",
+                            regFormatted = fmt::format("{}ShaderConstantsAt(clamp({}{}, 0, 255))",
                                 isPixelShader ? "Pixel" : "Vertex", reg, instr.constAddressRegisterRelative ? " + a0" : " + aL");
                         }
                         else
@@ -789,7 +789,7 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
                     if (!instr.const0Relative && ng2LiteralConstants.count(reg))
                         regFormatted = fmt::format("c{}", reg);
                     else
-                        regFormatted = fmt::format("vk::RawBufferLoad<float4>(g_PushConstants.{}ShaderConstants + clamp({}{}, 0, 255) * 16, 0x10)",
+                        regFormatted = fmt::format("{}ShaderConstantsAt(clamp({}{}, 0, 255))",
                             isPixelShader ? "Pixel" : "Vertex", reg, relative);
 #else
                     assert(!instr.const0Relative && !instr.const1Relative);
@@ -1849,22 +1849,22 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
             {
                 uint32_t tailCount = (isPixelShader ? 224 : 256) - constantInfo->registerIndex;
 
-                println("#define {}(INDEX) select((INDEX) < {}, vk::RawBufferLoad<float4>(g_PushConstants.{}ShaderConstants + ({} + min(INDEX, {})) * 16, 0x10), 0.0)",
+                println("#define {}(INDEX) select((INDEX) < {}, {}ShaderConstantsAt({} + min(INDEX, {})), 0.0)",
                     constantName, tailCount, shaderName, constantInfo->registerIndex.get(), tailCount - 1);
 #ifdef REEOT_RECOMP
                 if (velocityVertexShader())
-                    println("#define prev_{}(INDEX) select((INDEX) < {}, vk::RawBufferLoad<float4>(g_PushConstants.{}ShaderConstants + 4096 + ({} + min(INDEX, {})) * 16, 0x10), 0.0)",
+                    println("#define prev_{}(INDEX) select((INDEX) < {}, {}ShaderConstantsAt({} + min(INDEX, {})), 0.0)",
                         constantName, tailCount, shaderName, constantInfo->registerIndex.get(), tailCount - 1);
 #endif
             }
             else
             {
-                println("#define {} vk::RawBufferLoad<float4>(g_PushConstants.{}ShaderConstants + {}, 0x10)",
-                    constantName, shaderName, constantInfo->registerIndex * 16);
+                println("#define {} {}ShaderConstantsAt({})",
+                    constantName, shaderName, constantInfo->registerIndex.get());
 #ifdef REEOT_RECOMP
                 if (velocityVertexShader())
-                    println("#define prev_{} vk::RawBufferLoad<float4>(g_PushConstants.{}ShaderConstants + 4096 + {}, 0x10)",
-                        constantName, shaderName, constantInfo->registerIndex * 16);
+                    println("#define prev_{} {}ShaderConstantsAt({})",
+                        constantName, shaderName, constantInfo->registerIndex.get());
 #endif
             }
 
@@ -1891,19 +1891,19 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
             // of their own at SharedConstants + 1024: 128 bytes per dimension.
             for (size_t j = 0; j < std::size(TEXTURE_DIMENSIONS); j++)
             {
-                println("#define {}_Texture{}DescriptorIndex vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + {})",
+                println("#define {}_Texture{}DescriptorIndex ng2SharedU({})",
                     constantName, TEXTURE_DIMENSIONS[j], 1024 + j * 128 + constantInfo->registerIndex * 4);
             }
-            println("#define {}_SamplerDescriptorIndex vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + {})",
+            println("#define {}_SamplerDescriptorIndex ng2SharedU({})",
                 constantName, 1024 + std::size(TEXTURE_DIMENSIONS) * 128 + constantInfo->registerIndex * 4);
 #else
             for (size_t j = 0; j < std::size(TEXTURE_DIMENSIONS); j++)
             {
-                println("#define {}_Texture{}DescriptorIndex vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + {})",
+                println("#define {}_Texture{}DescriptorIndex ng2SharedU({})",
                     constantName, TEXTURE_DIMENSIONS[j], j * 64 + constantInfo->registerIndex * 4);
             }
 
-            println("#define {}_SamplerDescriptorIndex vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + {})",
+            println("#define {}_SamplerDescriptorIndex ng2SharedU({})",
                 constantName, std::size(TEXTURE_DIMENSIONS) * 64 + constantInfo->registerIndex * 4);
 #endif
 
@@ -1930,10 +1930,10 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
             continue;
         for (size_t j = 0; j < std::size(TEXTURE_DIMENSIONS); j++)
         {
-            println("#define s{}_Texture{}DescriptorIndex vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + {})",
+            println("#define s{}_Texture{}DescriptorIndex ng2SharedU({})",
                 r, TEXTURE_DIMENSIONS[j], 1024 + j * 128 + r * 4);
         }
-        println("#define s{}_SamplerDescriptorIndex vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + {})",
+        println("#define s{}_SamplerDescriptorIndex ng2SharedU({})",
             r, 1024 + std::size(TEXTURE_DIMENSIONS) * 128 + r * 4);
     }
 #elif defined(REEOT_RECOMP)
@@ -1943,10 +1943,10 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
             continue;
         for (size_t j = 0; j < std::size(TEXTURE_DIMENSIONS); j++)
         {
-            println("#define s{}_Texture{}DescriptorIndex vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + {})",
+            println("#define s{}_Texture{}DescriptorIndex ng2SharedU({})",
                 r, TEXTURE_DIMENSIONS[j], j * 64 + r * 4);
         }
-        println("#define s{}_SamplerDescriptorIndex vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + {})",
+        println("#define s{}_SamplerDescriptorIndex ng2SharedU({})",
             r, std::size(TEXTURE_DIMENSIONS) * 64 + r * 4);
     }
 #endif

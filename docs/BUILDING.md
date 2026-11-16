@@ -50,19 +50,27 @@ headers and libraries of your own *Build Tools for Visual Studio 2022*
 `tools/windows/case_links.py` on it once, then:
 
 ```
+tools/native/build_shaders.sh              # the game's shaders, from your default.xex
 tools/windows/build.sh                     # out/windows/ng2.exe        (x86-64-v3)
 IZUNA_CPU=compat tools/windows/build.sh    # out/windows-compat/ng2-compat.exe (x86-64-v2)
 tools/windows/make_release.sh out/windows/ng2.exe <destination> out/windows-compat/ng2-compat.exe
 ```
 
-`make_release.sh` assembles the release folder and zip: the two executables,
-`dxcompiler.dll` (DXC 1.8, x64: `DXC_DLL=` its path), the README, the folders the hub reads
-and the libraries' licences. It refuses to package any game file.
+`make_release.sh` assembles the release folder and zip: the two executables, the README,
+the folders the hub reads and the libraries' licences. It refuses to package any game file.
+
+Since v0.2.2.1 the game's shaders are built into the executables, as on Android and the
+PS5: `build_shaders.sh` translates them from your `default.xex` (with the XenosRecomp fork
+in `third_party/xenosrecomp`) into `out/native-shaders/shader_cache.cpp`, build output that
+is never committed. `-DIZUNA_SHADERS_FROM_GAME=ON` instead builds a program that compiles
+them from the player's copy at the first start (`src/izuna/izuna_shaders.cpp`), as v0.2.2
+did; it needs DXC 1.8's `dxcompiler.dll` beside it (`DXC_DLL=` its path for `make_release.sh`).
 
 ## 4. The Linux build (the AppImage)
 
 ```
 tools/linux/sysroot/make_sysroot.sh        # once: ~/ng2-ps5-deps/linux-sysroot
+tools/native/build_shaders.sh              # the game's shaders, from your default.xex
 tools/linux/build.sh                       # out/linux-desktop/ng2         (x86-64-v3)
 IZUNA_CPU=compat tools/linux/build.sh      # out/linux-desktop-compat/ng2  (x86-64-v2)
 tools/linux/make_appimage.sh               # out/linux-release/IzunaRecomp-<version>-x86_64.AppImage
@@ -75,13 +83,8 @@ plus the headers of X11, Wayland, PipeWire, PulseAudio, ALSA, udev and D-Bus,
 so SDL builds all of those backends and loads whichever the player's system
 has. `build.sh` refuses an SDL without them, or a binary that needs more than
 glibc 2.35. The AppImage carries both binaries; its `AppRun` starts the compat
-one on a processor without AVX2. It also needs DXC 1.8's Linux libraries
-(`libdxcompiler.so`, `libdxil.so`; `DXC_LINUX_DIR=` their folder) and downloads
-appimagetool 1.9.0 once.
-
-The game's shaders are not built here: `ng2.exe` recompiles them from the
-player's copy at the first start (`src/izuna/izuna_shaders.cpp`, with the
-XenosRecomp fork in `third_party/xenosrecomp`).
+one on a processor without AVX2. `make_appimage.sh` downloads appimagetool 1.9.0
+once. The game's shaders are built in, as on Windows (section 3).
 
 ## 5. The PS5 build
 

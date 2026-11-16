@@ -1,6 +1,9 @@
 // [IzunaRecomp] Threaded recording for the native renderer (native_draw_internal.h).
 
 #include "izuna/izuna_pc.h"
+#if defined(__linux__) && !defined(__PROSPERO__)
+#include <pthread.h>
+#endif
 #include "native/native_draw_internal.h"
 
 namespace ng2native {
@@ -318,6 +321,9 @@ void Execute(const RecHeader& h, const uint8_t* r) {
 
 void WorkerMain() {
   izuna::pc::RaiseThreadPriority(0);  // [IzunaRecomp] (Windows: above normal; elsewhere nothing)
+#if defined(__linux__) && !defined(__PROSPERO__)
+  pthread_setname_np(pthread_self(), "Izuna draw");  // [IzunaRecomp] (profiles; Android's hint session finds it)
+#endif
   for (;;) {
     const uint8_t* p;
     RecHeader h;

@@ -23,9 +23,9 @@ Starting
    copy (the one with default.xex). It is remembered.
 3. START GAME.
 
-The first start takes a little longer: the game's shaders are compiled for
-your GPU from your copy (kept in ~/.cache/IzunaRecomp/shaders, so later starts
-skip this).
+The game's shaders are built in, so there is no shader build at the first
+start; the first time an area is seen, its pipelines are prepared behind a
+short progress bar.
 
 Settings, logs, mods, DLC and saves to import live in
 ~/.local/share/IzunaRecomp (the AppImage itself is read-only).

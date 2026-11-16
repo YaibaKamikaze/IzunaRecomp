@@ -6,9 +6,10 @@
   under the MIT licence ([LICENSE](LICENSE)).
 - **The Windows release** (`ng2.exe`, `ng2-compat.exe`) links in the libraries
   below, statically. Their licence texts are in the release's `licenses/`
-  folder (`tools/windows/make_release.sh` copies them). `dxcompiler.dll` (the
-  DirectX Shader Compiler, used at the first start to compile the game's
-  shaders for your GPU) ships beside the executables under its own licence.
+  folder (`tools/windows/make_release.sh` copies them). Up to v0.2.2,
+  `dxcompiler.dll` (the DirectX Shader Compiler, used at the first start to
+  compile the game's shaders for your GPU) shipped beside the executables under
+  its own licence; since v0.2.2.1 the shaders are built in and no DXC ships.
 - **The PS5 release** (the `PPSA94203` app folder) links in the same
   libraries (not DXC or the Vulkan loader), plus Mesa's RADV driver for the
   PS5 (MIT and Mesa's other licences). Its app startup (`app_crt.cpp`,
@@ -83,9 +84,9 @@ it: Turnip packages are the player's own download.
 
 ## Release-only files
 
-- `dxcompiler.dll` (Windows), `libdxcompiler.so` and `libdxil.so` (the Linux
-  AppImage) — DirectX Shader Compiler (Microsoft), under its licence
-  (`licenses/dxcompiler.txt` in the release).
+- Up to v0.2.2: `dxcompiler.dll` (Windows), `libdxcompiler.so` and `libdxil.so`
+  (the Linux AppImage) — DirectX Shader Compiler (Microsoft), under its licence
+  (`licenses/dxcompiler.txt` in the release). v0.2.2.1 ships none.
 
 ## Reference, not code
 
